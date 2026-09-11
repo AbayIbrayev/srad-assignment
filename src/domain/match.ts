@@ -30,6 +30,17 @@ interface MatchBase {
 
 export interface InProgressMatch extends MatchBase {
   status: 'in_progress'
+  /**
+   * The score as it was immediately before the most recent change, or `null`
+   * when there is nothing to undo.
+   *
+   * Deliberately one snapshot and not a stack. The brief asks for "undo last
+   * score change", singular, and a single step is what an operator correcting
+   * a mis-click actually needs. Keeping it to one value also means the event
+   * log that follows can be added on top rather than replacing a history
+   * mechanism that already exists in a second, slightly different shape.
+   */
+  lastChange: Score | null
 }
 
 export interface FinishedMatch extends MatchBase {

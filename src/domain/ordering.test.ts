@@ -25,6 +25,7 @@ function inProgress(
     score: { home, away },
     startedAt: 0,
     status: 'in_progress',
+    lastChange: null,
   }
 }
 

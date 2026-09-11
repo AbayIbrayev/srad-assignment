@@ -185,3 +185,21 @@ I asked for a transition when matches re-order, on the grounds that the board cu
 That found a real gap in the design. Under `prefers-reduced-motion: reduce`, two animations were still running — not the new one, which had correctly stayed out of it, but the dialog and card animations from `tw-animate-css`, which does not consult the preference on its own. `PDR.md` had claimed since the design phase that reduced motion was respected, and that claim was simply false for most of the app's motion. A global media rule now collapses those durations, and re-running the check confirmed zero animations under `reduce`.
 
 The lesson is the one this project keeps re-learning: a green jsdom suite is evidence about logic, not about what the browser does. The two checks that mattered here — "does it actually animate" and "does it actually stop animating" — were both invisible to the test suite that covers the same code.
+
+### Round 12 — commit 5, undo
+
+The one additional operation the brief allows. A single snapshot per match, reverted once, then disarmed until the next change.
+
+**Two bugs, both in code written during this commit, both found before it landed.**
+
+*The migration was dead code.* Adding `lastChange` as a required field meant bumping the persisted version and writing a v1 → v2 migration so an operator reloading into a new build mid-matchday would not lose their board. The migration never ran. The safe-storage guard added in commit 3 validates state against the current shape and runs *before* zustand's version gate, so version 1 state was thrown away at the storage layer and the migration never saw it. The fix was a correction of responsibility rather than a patch: the storage guard's job is "is this recoverable data", not "does this match today's type exactly", and migration is what brings it current. A test now asserts a v1 payload is migrated and usable, so the migration cannot go dead again unnoticed.
+
+*An accessible name came out as one run-together word.* The Undo button's name was composed from visible text plus a visually hidden span, and computed as `"Undolast score change: Spain versus Brazil"`. The accessible name algorithm trims each text node before joining them, so a span that begins with a space loses it. The Finish button had the same construction and had escaped only because its hidden text starts with a colon. Both now use `aria-label`, and a test pins both names exactly.
+
+That second one is worth dwelling on. It would have passed any review that read the JSX, it renders correctly on screen, and the test suite was green — the tests queried with a regex that happened to match. Only computing the name the way a screen reader does exposed it. Accessibility that is asserted rather than measured is decoration.
+
+**Verified in a real browser rather than trusting the polyfill.** Chromium's own accessibility tree resolves exactly one button for the full name, and the undo flow behaves end to end: disabled on a fresh match, enabled by a goal, restores the previous score, disables itself again, announces the result, and disappears once the match is finished. Persisted state reports `version: 2`.
+
+**Test quality, checked as usual.** Five mutants, all caught: goals never arming undo, undo failing to disarm and quietly becoming multi-step, a finished match keeping its undo history, the migration removed, and the button never disabled.
+
+**One deviation from the design document,** recorded there: `PDR.md` had reserved storage version 2 for the event log. Undo needed a bump first, so undo is version 2 and the event log will be version 3.

@@ -128,7 +128,7 @@ The container selects the ordered list of match **ids** with a shallow comparato
 
 ### D8. Persistence
 
-Storage key `srad-scoreboard`, `version: 1`, bumped to `2` when `events[]` lands, with a migration giving pre-existing matches an empty log. Corrupt or unparseable stored state resets to empty rather than white-screening the application. Documented in the README under the brief's "Data:" line.
+Storage key `srad-scoreboard`. `version: 2` as of the undo commit, which added `lastChange` to in-progress matches; the event log will take it to `3`. Each bump ships a migration rather than letting older state be discarded — an operator who reloads into a new build mid-matchday should not lose the board they are watching. Corrupt or unparseable stored state resets to empty rather than white-screening the application. Documented in the README under the brief's "Data:" line.
 
 There is **no retention policy** on finished matches or event history. This is recorded in the README as an accepted trade-off — a single matchday does not need one. A "clear finished" button is deliberately not added, because it would invite feature-count questions against "exactly one additional operation".
 
@@ -177,7 +177,7 @@ Each commit is self-contained and green.
 | 2 | `feat: match domain model and summary ordering` | Domain types, team roster, `compareInProgress` / `compareFinished`, ordering tests including the brief's example scenario | done |
 | 3 | `feat: scoreboard store with localStorage persistence` | zustand slice, start / score / finish, validation, `persist` v1 with guarded rehydration, store tests | done |
 | 4 | `feat: start, update score and finish UI` | Dialogs, `<ol>` grid, cards, finished group, accessibility wiring, RTL tests | done |
-| 5 | `feat: undo last score change` | The section 5 additional operation | pending |
+| 5 | `feat: undo last score change` | The section 5 additional operation | done |
 | 6 | `feat: per-match event log with audit trail` | **The distinct feature commit.** Event union, persist v2 + migration, collapsible scrollable log, `GOAL_REMOVED` vs `UNDO` rendering, tests | pending |
 | 7 | `test: playwright end-to-end coverage for core flows` | Three flows | pending |
 | 8 | `docs: finalise README` | Assumptions, trade-offs, requirement map, accessibility compromises, run instructions, feature documentation — **authored by the candidate, not generated** | pending |
@@ -261,6 +261,20 @@ Appended per commit: what landed, what deviated from this document, and any deci
   **That check found a real gap in D9.** Under `reduce`, two animations were still running — not from the new hook, which had correctly stayed out of it, but from `tw-animate-css`, which powers the dialog and card animations and does not consult the preference on its own. The design claimed reduced motion was respected while the app still animated. A global `@media (prefers-reduced-motion: reduce)` rule in `src/index.css` now collapses them, and re-running the check confirmed zero animations. This is exactly the class of thing jsdom cannot catch.
 
   `npm test` 105 passed · `npx tsc -b` clean · `npm run lint` clean · `npm run build` green.
+
+- **Commit 5 — `feat: undo last score change`.** The section 5 additional operation. `lastChange: Score | null` on `InProgressMatch`, one store action, one button.
+
+  **Two bugs found during the commit, both in code written for it:**
+  - **The migration was dead code.** `lastChange` was added as a required field, the storage version bumped to 2, and a v1 → v2 migration written. It never ran: the safe-storage validator rejects state that does not match the current shape, and it runs *before* zustand's version gate, so v1 state was discarded at the storage layer and the migration never saw it. Fixed by making the validator tolerant of an absent `lastChange` — its job is "is this recoverable", not "does this match today's type exactly"; migration is what makes it current. The undo action also guards on a falsy `lastChange` rather than `=== null`, so hand-edited storage cannot restore `undefined` as a score.
+  - **An accessible name came out wrong.** Composing the Undo button's name from visible text plus an `sr-only` span produced `"Undolast score change: Spain versus Brazil"` — the accessible name algorithm trims each text node before joining them, so a span beginning with a space loses it. The Finish button had escaped this only because its span begins with a colon. Both now compose their names with `aria-label`, and a test pins both strings exactly.
+
+  **Deviation from this document:** D8 said storage version 2 would arrive with the event log. Undo needed it first, so v2 is undo and the event log will be v3. Recorded in D8.
+
+  **Test quality check.** Five mutants, all caught: goals never arming undo (7 failures), undo not disarming and so becoming multi-step (2), a finished match keeping its undo history (1), the migration removed (1), and the undo button never disabled (2).
+
+  **Verified in a real browser.** Undo is disabled on a fresh match, enabled by a goal, restores the previous score, disables itself again, announces "Last change undone. Spain 1 - 0 Brazil.", and disappears entirely once the match is finished. Persisted state reports `version: 2`. Chromium's own accessibility tree — not the test polyfill — resolves exactly one button for the full name `Undo last score change: Spain versus Brazil`.
+
+  `npm test` 119 passed · `npx tsc -b` clean · `npm run lint` clean · `npm run build` green.
 
 
 ---

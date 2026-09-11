@@ -78,6 +78,51 @@ describe('MatchCard', () => {
     expect(screen.getByText('Spain')).toBeInTheDocument()
   })
 
+  describe('undo', () => {
+    const undoButton = () => screen.getByRole('button', { name: /^Undo last score change/ })
+
+    it('is offered but inert until something has changed', () => {
+      renderCard(givenMatch('Spain', 'Brazil'))
+
+      expect(undoButton()).toBeDisabled()
+    })
+
+    it('takes back the last goal and says so', async () => {
+      const id = givenMatch('Spain', 'Brazil')
+      const { user } = renderCard(id)
+
+      await user.click(screen.getByRole('button', { name: 'Add a goal for Spain' }))
+      await user.click(undoButton())
+
+      expect(useScoreboardStore.getState().matches[id].score).toEqual({ home: 0, away: 0 })
+      expect(screen.getByTestId('announcer')).toHaveTextContent(
+        'Last change undone. Spain 0 - 0 Brazil.',
+      )
+    })
+
+    it('goes inert again once there is nothing left to undo', async () => {
+      const { user } = renderCard(givenMatch('Spain', 'Brazil'))
+
+      await user.click(screen.getByRole('button', { name: 'Add a goal for Spain' }))
+      expect(undoButton()).toBeEnabled()
+
+      await user.click(undoButton())
+      expect(undoButton()).toBeDisabled()
+    })
+
+    it('names its own match, so a board of several can be driven without ambiguity', () => {
+      renderCard(givenMatch('Spain', 'Brazil'))
+
+      // Pinned exactly. Composing this name from visible text plus an sr-only
+      // span produced "Undolast score change": the accessible name algorithm
+      // trims each text node before joining them, so a leading space is lost.
+      expect(undoButton()).toHaveAccessibleName('Undo last score change: Spain versus Brazil')
+      expect(screen.getByRole('button', { name: /^Finish match/ })).toHaveAccessibleName(
+        'Finish match: Spain versus Brazil',
+      )
+    })
+  })
+
   describe('finishing', () => {
     it('asks for confirmation first, because finishing cannot be undone', async () => {
       const id = givenMatch('Spain', 'Brazil', 1, 0)

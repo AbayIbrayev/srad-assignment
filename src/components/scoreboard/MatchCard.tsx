@@ -39,6 +39,7 @@ export function MatchCard({
   const match = useMatch(id)
   const addGoal = useScoreboardStore((state) => state.addGoal)
   const removeGoal = useScoreboardStore((state) => state.removeGoal)
+  const undoLastChange = useScoreboardStore((state) => state.undoLastChange)
   const finishMatch = useScoreboardStore((state) => state.finishMatch)
   const announce = useAnnouncer()
   const [confirming, setConfirming] = useState(false)
@@ -123,10 +124,40 @@ export function MatchCard({
         })}
       </CardContent>
 
-      <CardFooter>
-        <Button variant="destructive" size="sm" onClick={() => setConfirming(true)}>
+      <CardFooter className="gap-2">
+        {/*
+          Undo and the minus button are not the same action and are not labelled
+          as though they were. Minus says the score is genuinely lower -- a goal
+          disallowed, or awarded to the wrong side. Undo says the last entry was
+          a mistake. Same arithmetic, different claim about what happened.
+        */}
+        <Button
+          variant="outline"
+          size="sm"
+          aria-label={`Undo last score change: ${fixture(match)}`}
+          disabled={match.lastChange === null}
+          onClick={() => {
+            undoLastChange(match.id)
+            const updated = useScoreboardStore.getState().matches[match.id]
+            if (updated) announce(`Last change undone. ${scoreline(updated)}.`)
+          }}
+        >
+          Undo
+        </Button>
+        {/*
+          Both labels are composed with `aria-label` rather than an sr-only
+          span. The accessible name algorithm trims each text node before
+          joining them, so a span beginning with a space loses it and the name
+          comes out as "Undolast score change". Not a hypothetical: it happened
+          here, and a test now pins both names.
+        */}
+        <Button
+          variant="destructive"
+          size="sm"
+          aria-label={`Finish match: ${fixture(match)}`}
+          onClick={() => setConfirming(true)}
+        >
           Finish match
-          <span className="sr-only">: {fixture(match)}</span>
         </Button>
       </CardFooter>
 

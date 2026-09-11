@@ -15,6 +15,7 @@ function inProgress(homeTeam: string, awayTeam: string): InProgressMatch {
     score: { home: 0, away: 0 },
     startedAt: 0,
     status: 'in_progress',
+    lastChange: null,
   }
 }
 

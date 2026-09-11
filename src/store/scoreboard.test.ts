@@ -45,6 +45,7 @@ describe('startMatch', () => {
       score: { home: 0, away: 0 },
       startedAt: 1_100,
       status: 'in_progress',
+      lastChange: null,
     })
   })
 
@@ -174,6 +175,118 @@ describe('removeGoal', () => {
   })
 })
 
+describe('undoLastChange', () => {
+  it('has nothing to undo on a freshly started match', () => {
+    const store = newStore()
+    store.getState().startMatch('Spain', 'Brazil')
+    const before = store.getState().matches
+
+    store.getState().undoLastChange('match-1')
+
+    expect(store.getState().matches).toBe(before)
+  })
+
+  it('takes back a goal', () => {
+    const store = newStore()
+    store.getState().startMatch('Spain', 'Brazil')
+    store.getState().addGoal('match-1', 'home')
+
+    store.getState().undoLastChange('match-1')
+
+    expect(store.getState().matches['match-1'].score).toEqual({ home: 0, away: 0 })
+  })
+
+  it('puts back a goal that was removed', () => {
+    // Undo reverts the last score change of either kind, not only additions.
+    const store = newStore()
+    store.getState().startMatch('Spain', 'Brazil')
+    store.getState().addGoal('match-1', 'home')
+    store.getState().removeGoal('match-1', 'home')
+
+    store.getState().undoLastChange('match-1')
+
+    expect(store.getState().matches['match-1'].score).toEqual({ home: 1, away: 0 })
+  })
+
+  it('goes back one step only, and then has nothing left to undo', () => {
+    const store = newStore()
+    store.getState().startMatch('Spain', 'Brazil')
+    store.getState().addGoal('match-1', 'home')
+    store.getState().addGoal('match-1', 'home')
+
+    store.getState().undoLastChange('match-1')
+    expect(store.getState().matches['match-1'].score).toEqual({ home: 1, away: 0 })
+
+    const afterUndo = store.getState().matches
+    store.getState().undoLastChange('match-1')
+
+    expect(store.getState().matches['match-1'].score).toEqual({ home: 1, away: 0 })
+    expect(store.getState().matches).toBe(afterUndo)
+  })
+
+  it('is armed again by the next change', () => {
+    const store = newStore()
+    store.getState().startMatch('Spain', 'Brazil')
+    store.getState().addGoal('match-1', 'home')
+    store.getState().undoLastChange('match-1')
+    store.getState().addGoal('match-1', 'away')
+
+    store.getState().undoLastChange('match-1')
+
+    expect(store.getState().matches['match-1'].score).toEqual({ home: 0, away: 0 })
+  })
+
+  it('is not armed by a removal that did nothing', () => {
+    const store = newStore()
+    store.getState().startMatch('Spain', 'Brazil')
+    store.getState().addGoal('match-1', 'home')
+    store.getState().removeGoal('match-1', 'away') // already zero
+
+    store.getState().undoLastChange('match-1')
+
+    // The goal is taken back, not the removal that never happened.
+    expect(store.getState().matches['match-1'].score).toEqual({ home: 0, away: 0 })
+  })
+
+  it('cannot reach a finished match', () => {
+    // Finishing is terminal, so the last score change before it stays final.
+    const store = newStore()
+    store.getState().startMatch('Spain', 'Brazil')
+    store.getState().addGoal('match-1', 'home')
+    store.getState().finishMatch('match-1')
+
+    store.getState().undoLastChange('match-1')
+
+    expect(store.getState().matches['match-1'].score).toEqual({ home: 1, away: 0 })
+  })
+
+  it('does not persist an undo history onto a finished match', () => {
+    const store = newStore()
+    store.getState().startMatch('Spain', 'Brazil')
+    store.getState().addGoal('match-1', 'home')
+    store.getState().finishMatch('match-1')
+
+    expect(store.getState().matches['match-1']).not.toHaveProperty('lastChange')
+  })
+
+  it('ignores an unknown match', () => {
+    const store = newStore()
+
+    expect(() => store.getState().undoLastChange('nope')).not.toThrow()
+  })
+
+  it('survives a reload', () => {
+    const first = newStore()
+    first.getState().startMatch('Spain', 'Brazil')
+    first.getState().addGoal('match-1', 'home')
+
+    const second = newStore()
+    second.getState().undoLastChange('match-1')
+
+    expect(second.getState().matches['match-1'].score).toEqual({ home: 0, away: 0 })
+  })
+})
+
 describe('finishMatch', () => {
   it('marks the match finished and stamps the finish time', () => {
     const store = newStore()
@@ -267,11 +380,9 @@ describe('persistence', () => {
     expect(store.getState().matches).toEqual({})
   })
 
-  it('starts empty when the stored version predates this one', () => {
-    // Pins the current behaviour: with no `migrate`, zustand discards state it
-    // cannot migrate and the app starts empty rather than rendering a shape
-    // from an older build. The event log bumps this to version 2 and will add
-    // a migration, at which point this test documents what it replaced.
+  it('migrates state written before undo existed, rather than dropping it', () => {
+    // An operator who reloads into a new build mid-matchday should not lose the
+    // board they are watching.
     localStorage.setItem(
       SCOREBOARD_STORAGE_KEY,
       JSON.stringify({
@@ -289,14 +400,20 @@ describe('persistence', () => {
           },
           nextSeq: 2,
         },
-        version: SCOREBOARD_STORAGE_VERSION - 1,
+        version: 1,
       }),
     )
 
     const store = newStore()
+    const restored = store.getState().matches['match-1']
 
-    expect(store.getState().matches).toEqual({})
-    expect(store.getState().nextSeq).toBe(1)
+    expect(restored).toMatchObject({ homeTeam: 'Spain', score: { home: 1, away: 0 } })
+    // Nothing to undo: the change that produced this score happened in a build
+    // that was not recording it.
+    expect(isInProgress(restored) && restored.lastChange).toBeNull()
+
+    store.getState().undoLastChange('match-1')
+    expect(store.getState().matches['match-1'].score).toEqual({ home: 1, away: 0 })
   })
 
   it('still starts, and is still usable, after discarding corrupt state', () => {
@@ -319,6 +436,7 @@ describe('isPersistedScoreboard', () => {
     score: { home: 1, away: 0 },
     startedAt: 1_000,
     status: 'in_progress',
+    lastChange: null,
   }
 
   it('accepts an empty scoreboard', () => {

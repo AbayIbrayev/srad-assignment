@@ -12,10 +12,12 @@ export const SCOREBOARD_STORAGE_KEY = 'srad-scoreboard'
 
 /**
  * Bumped when the persisted shape changes in a way older state cannot satisfy.
- * Version 2 arrives with the event log, which adds a field every stored match
- * will be missing.
+ *
+ * Version 2 added `lastChange` to in-progress matches for undo. Migrating
+ * rather than discarding matters more than it looks: an operator who reloads
+ * into a new build mid-matchday should not lose the board they are watching.
  */
-export const SCOREBOARD_STORAGE_VERSION = 1
+export const SCOREBOARD_STORAGE_VERSION = 2
 
 /**
  * The clock and the id generator are injected rather than reached for, so the
@@ -53,6 +55,12 @@ export interface ScoreboardState extends PersistedScoreboard {
   addGoal: (id: MatchId, side: Side) => void
   /** No-op at zero. The UI disables the control; this is the backstop. */
   removeGoal: (id: MatchId, side: Side) => void
+  /**
+   * Reverts the most recent score change on a match, whether that was a goal
+   * or a goal removed, and then has nothing left to revert. No-op when there
+   * is nothing to undo, and never applies to a finished match.
+   */
+  undoLastChange: (id: MatchId) => void
   finishMatch: (id: MatchId) => void
 }
 
@@ -75,7 +83,12 @@ const isMatch = (value: unknown): value is Match => {
     isScore(match.score)
 
   if (!shapeIsSound) return false
-  if (match.status === 'in_progress') return true
+  if (match.status === 'in_progress') {
+    // `lastChange` may be absent: version 1 predates undo, and this guard runs
+    // *before* zustand's version gate. Rejecting older-but-recoverable state
+    // here would make the migration below unreachable.
+    return match.lastChange == null || isScore(match.lastChange)
+  }
   return match.status === 'finished' && Number.isFinite(match.finishedAt)
 }
 
@@ -133,6 +146,7 @@ export function createScoreboardStore(deps: ScoreboardDeps) {
               score: { home: 0, away: 0 },
               startedAt: deps.now(),
               status: 'in_progress',
+              lastChange: null,
             }
 
             set({
@@ -147,17 +161,32 @@ export function createScoreboardStore(deps: ScoreboardDeps) {
             updateInProgress(id, (match) => ({
               ...match,
               score: { ...match.score, [side]: match.score[side] + 1 },
+              lastChange: match.score,
             })),
 
           removeGoal: (id, side) =>
             updateInProgress(id, (match) =>
               match.score[side] === 0
                 ? match
-                : { ...match, score: { ...match.score, [side]: match.score[side] - 1 } },
+                : {
+                    ...match,
+                    score: { ...match.score, [side]: match.score[side] - 1 },
+                    lastChange: match.score,
+                  },
+            ),
+
+          undoLastChange: (id) =>
+            updateInProgress(id, (match) =>
+              // Falsy rather than `=== null`: hand-edited storage can leave the
+              // field absent, and restoring `undefined` as a score would be
+              // worse than doing nothing.
+              match.lastChange
+                ? { ...match, score: match.lastChange, lastChange: null }
+                : match,
             ),
 
           finishMatch: (id) =>
-            updateInProgress(id, (match) => ({
+            updateInProgress(id, ({ lastChange: _undoable, ...match }) => ({
               ...match,
               status: 'finished',
               finishedAt: deps.now(),
@@ -172,6 +201,25 @@ export function createScoreboardStore(deps: ScoreboardDeps) {
           isPersistedScoreboard,
         ),
         partialize: ({ matches, nextSeq }) => ({ matches, nextSeq }),
+        migrate: (persisted, version) => {
+          const state = persisted as PersistedScoreboard
+
+          // v1 predates undo. Give every in-progress match an empty history
+          // rather than dropping the operator's board on upgrade.
+          if (version < 2) {
+            return {
+              ...state,
+              matches: Object.fromEntries(
+                Object.entries(state.matches).map(([id, match]) => [
+                  id,
+                  match.status === 'in_progress' ? { ...match, lastChange: null } : match,
+                ]),
+              ),
+            }
+          }
+
+          return state
+        },
       },
     ),
   )
