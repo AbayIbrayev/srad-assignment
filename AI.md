@@ -142,3 +142,20 @@ I asked for emoji flags on the teams to make the UI more interactive. This was f
 - **Windows Chrome renders no flag glyphs at all** and falls back to the underlying letter pair, so "🇦🇷" shows as "AR". That degrades to a readable abbreviation rather than a broken box, which makes it an accepted trade-off rather than a blocker — but it is the kind of thing a reviewer discovers on their own machine and marks down if it looks unintentional, so it goes in the README as a known limitation.
 
 **Implementation note.** The flag lookup is derived from the roster rather than written as a second literal beside it, so a team cannot be added without a flag. It returns `undefined` for an unknown name rather than a placeholder, so a match persisted under an older roster renders its team name plainly instead of borrowing another country's flag. Tests assert each flag is exactly two codepoints in the regional-indicator range — a stray ASCII letter or a half-formed pair renders as text and would otherwise slip through unnoticed.
+
+### Round 9 — commit 3, the store
+
+State, validation and persistence. Still no UI.
+
+**Where the AI was told to verify instead of assert.** Two points in this commit turned on how a library actually behaves rather than how it is assumed to behave, and both were checked against a running test before being written down:
+
+- **Version-mismatch handling.** `PDR.md` says the persisted version bumps to 2 when the event log lands, which only matters if the version-1 behaviour is known. Rather than reason about it, a throwaway probe test was run: zustand discards state it cannot migrate when no `migrate` function is supplied, starts empty, and logs a warning. That is the right failure mode, so it was pinned as a real test — commit 6 now has a documented baseline to replace instead of a guess.
+- **The persist storage contract.** The types were read out of `node_modules/zustand/middleware/persist.d.ts` before writing an implementation of `PersistStorage`, rather than recalled.
+
+**Test quality was checked, not assumed, again.** Sixty-nine passing tests prove nothing by themselves when the same tool wrote the code and the tests. Four deliberate mutants were introduced and the suite re-run each time: removing the guard that makes a finished match immutable (3 tests failed), removing the floor that stops a score going below zero (1), bypassing start validation (3), and removing the short-circuit that avoids writing state on a no-op (1). Every mutant was caught.
+
+**Things decided during implementation rather than in the design:**
+
+- `crypto.randomUUID` does not exist outside a secure context, which includes opening the dev server from a phone on the LAN — precisely what someone does to check a responsive layout. The id generator falls back instead of throwing.
+- No `reset` action was added to the store. Tests build fresh stores through the factory, and a production reset would be another operation a reviewer could count against "exactly one additional operation" — the same argument the design already makes against a "clear finished" button.
+- `startMatch` returns an outcome rather than throwing. A rejected start is an expected result of operator input, not an exceptional condition, and the caller needs the reason in order to render it.

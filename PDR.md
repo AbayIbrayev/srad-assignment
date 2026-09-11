@@ -163,7 +163,7 @@ Each commit is self-contained and green.
 |---|---|---|---|
 | 1 | `docs: add PDR and AI usage log` | `PDR.md`, `AI.md` | done |
 | 2 | `feat: match domain model and summary ordering` | Domain types, team roster, `compareInProgress` / `compareFinished`, ordering tests including the brief's example scenario | done |
-| 3 | `feat: scoreboard store with localStorage persistence` | zustand slice, start / score / finish, validation, `persist` v1, store tests | pending |
+| 3 | `feat: scoreboard store with localStorage persistence` | zustand slice, start / score / finish, validation, `persist` v1 with guarded rehydration, store tests | done |
 | 4 | `feat: start, update score and finish UI` | Dialogs, `<ol>` grid, cards, finished group, accessibility wiring, RTL tests | pending |
 | 5 | `feat: undo last score change` | The section 5 additional operation | pending |
 | 6 | `feat: per-match event log with audit trail` | **The distinct feature commit.** Event union, persist v2 + migration, collapsible scrollable log, `GOAL_REMOVED` vs `UNDO` rendering, tests | pending |
@@ -204,6 +204,23 @@ Appended per commit: what landed, what deviated from this document, and any deci
   **Added mid-commit at the candidate's request:** a regional-indicator flag emoji per team, as a scanning aid for an operator watching several cards. Folded into this commit rather than a later one because it belongs with the roster it describes. See D6 for the accessibility and Windows-rendering constraints it carries. `TEAMS` became a list of `{ name, flag }` objects with the lookup derived from it, so a team cannot be added without a flag, and `Team` is now `(typeof TEAMS)[number]['name']`.
 
   `npm test` 19 passed · `npx tsc -b` clean · `npm run lint` clean.
+
+- **Commit 3 — `feat: scoreboard store with localStorage persistence`.** Landed. Three source files, three test files, still no UI.
+
+  `src/domain/validation.ts` — `validateStartMatch` returns an error *code* or `null`, and `teamsInPlay` is exported separately because the picker needs it: a team that cannot be chosen is disabled at the point of choice rather than accepted and then rejected on submit. Confirmed in a test that "no duplicate in-progress fixture" needs no rule of its own — it falls out of "a team plays one match at a time" — so the redundant third rule from D6 cannot be added back without a test objecting. Finished matches deliberately release their teams, so a fixture can be replayed.
+
+  `src/store/safe-persist-storage.ts` — a `PersistStorage` that refuses to return state it cannot vouch for. `createJSONStorage` parses whatever is under the key and trusts it; this validates the envelope and the state, and on failure removes the key and reports nothing stored. Storage *access* is guarded too, since `localStorage` throws outright in a private window or when site data is blocked, and a write failure (quota) is swallowed so the scoreboard keeps working in memory and merely stops surviving a reload. This is D8's "must not white-screen" made concrete and testable.
+
+  `src/store/scoreboard.ts` — the zustand slice. `matches` is keyed by id (cards select their own match; an update touches one key). Every score change funnels through one `updateInProgress` helper, so D5's "a finished match is immutable" is enforced in a single place rather than repeated at three call sites and eventually forgotten at one. `startMatch` returns `{ ok: false, error }` rather than throwing: a rejected start is an expected result of operator input, and the caller needs the reason to render it. A no-op (removing a goal at zero, finishing an already-finished match) returns the identical state object, so it re-renders nothing.
+
+  **Decisions taken during implementation that this document did not anticipate:**
+  - `crypto.randomUUID` is unavailable outside a secure context, which includes hitting the dev server from a phone on the LAN — exactly what someone does to check the responsive layout. `randomId` falls back rather than throwing; ids are local identifiers, not security material.
+  - Version-mismatch behaviour was **probed rather than assumed**: with no `migrate` function, zustand discards state it cannot migrate and the app starts empty, logging a warning. That is the right failure mode, and it is now pinned by a test so commit 6's v1 → v2 migration has a documented baseline to replace.
+  - No `reset` action was added. Tests construct fresh stores through the factory, and component tests can use zustand's built-in `setState`. A production reset would be a fifth operation a reviewer could count against "exactly one additional operation" (D8 makes the same argument against a "clear finished" button).
+
+  **Test quality check.** Four mutants were run against the suite: the terminal-finish guard removed (3 failures), the zero floor removed (1), start validation bypassed (3), and the no-op short-circuit removed (1). Each was caught.
+
+  `npm test` 69 passed · `npx tsc -b` clean · `npm run lint` clean · `npm run build` green.
 
 
 ---
