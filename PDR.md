@@ -1,0 +1,195 @@
+# PDR — Live Football World Cup Scoreboard
+
+Design record for the Sportradar Data & Odds Platform front-end exercise. This document captures the decisions, their rationale, and the alternatives that were rejected. It is the specification the implementation commits are built against.
+
+Reviewer-facing documentation lives in [README.md](./README.md); this document links to it, not the other way round, so a reviewer who reads only the README misses nothing required by the brief. Process and AI usage are recorded in [AI.md](./AI.md).
+
+---
+
+## Context
+
+Build a Live Football World Cup scoreboard in React + TypeScript. The brief deliberately underspecifies; the graded skill is making defensible interpretations and documenting them. A follow-up interview walks through decisions and trade-offs, so every choice below has a one-sentence defence attached.
+
+The repository was bootstrapped ahead of this document (`ac1f3d6 feat: project setup`) with Vite + React 19 + TypeScript, Tailwind 4, oxlint, Vitest + React Testing Library + jsdom, Playwright (desktop and Pixel 5 projects, build-and-preview web server), zustand, and a small set of vendored shadcn components.
+
+Intended outcome: a repository that reads like a normal code review submission, provably reproduces the brief's example ordering, and whose README pre-empts every "why did you…" question.
+
+---
+
+## Requirement → implementation map
+
+This mapping is the core defensive artefact and is reproduced in the README with quotes from the brief.
+
+| Brief | Implementation |
+|---|---|
+| 1. Start a new match | "Start match" dialog, home/away team selects from a fixed 10-team list |
+| 2. Update the score | `+1` / `−1` buttons per team on each in-progress card |
+| 3. Finish a match | "Finish" button, confirmation step, **terminal** |
+| 4. Summary of matches in progress | Ranked card grid; `total goals desc`, ties → `seq desc` (most recently started first) |
+| 5. **Exactly one** additional operation | **Undo last score change** (single-step, per match) |
+| Distinct git commit feature | **Per-match event log / audit trail** (collapsible, scrollable, per card) |
+| "Data: … localStorage … allowed if you document it" | zustand `persist` → localStorage. Documented under Data, **never described as a feature** |
+| Tests | Vitest + RTL (required), Playwright (optional, 3 flows) |
+| Accessibility | Semantic `<ol>`/`<li>`, labelled controls, single app-level live region |
+| Responsive layout | 1 / 2 / 3 column grid |
+
+Explicitly argued in the README as **not** additional operations, to protect the "exactly one" reading:
+
+- Score `−1` — this is requirement 2, "change the score".
+- Start-match validation — a constraint, not an operation.
+- The collapsible finished group — the brief says "you may show finished matches elsewhere if you like".
+- localStorage persistence — granted unconditionally by the separate "Data:" line under Technical expectations, which is distinct from the section 5 list.
+
+---
+
+## Decisions
+
+### D1. Ordering is a pure function over a monotonic sequence
+
+`seq: number` increments per registration and is the authoritative ordering key. `startedAt: number` (wall clock) is stored for display only.
+
+```ts
+// src/domain/ordering.ts
+export const totalGoals = (m: Match) => m.home + m.away
+
+export const compareMatches = (a: Match, b: Match) =>
+  totalGoals(b) - totalGoals(a) || b.seq - a.seq
+```
+
+**Why not `Date.now()`:** two matches registered in the same millisecond collide, which is trivially reproducible in tests and in any seeded or imported data. `Array.prototype.sort` stability cannot rescue it, because insertion order is lost across a localStorage rehydrate — the stored array's order is whatever JSON preserved. `seq` gives a total order that survives serialisation, so "equal goals and equal start time" is not a state the app can reach.
+
+**"You define what 'start' means for ordering":** start is the moment the operator registers the match. Registration order is authoritative; wall-clock time is presentational.
+
+`now()` and `id()` are injected into the store so tests are deterministic.
+
+### D2. Layout — a grid, but semantically a list
+
+Card grid, row-major, 1 / 2 / 3 columns via `repeat(auto-fill, minmax(320px, 1fr))`.
+
+Chosen over a single ranked column because an operator monitoring several simultaneous matches scans a grid faster than scrolling a list. The cost — that reading order in a multi-column grid is ambiguous — is paid off by keeping the DOM element an `<ol>` / `<li>` with `display: grid`, so semantics and visual order agree, and by putting a visible `#n` rank badge on every card so ordering is verifiable without counting.
+
+Each card shows rank, both teams, both scores, **total goals**, and **start time**. Total and start time make the ordering rule auditable at a glance, which is the cheapest available defence of the only objectively-graded requirement.
+
+Finished matches live in a separate collapsed `<details>` group below, ordered most-recently-finished first (the brief is silent, so this is a documented choice), with no rank badges. Collapsed-with-a-count also makes it visually obvious that finished matches are absent from the in-progress summary.
+
+### D3. Score model — `+1` / `−1`, and why undo is still not redundant
+
+`+1` and `−1` per team. No numeric inputs: no NaN/empty/paste guards, no commit-on-blur buffering, no third dialog, and the card stays dense — which was the entire rationale for the grid. `−1` is **disabled at 0**: a disabled control rather than a silent clamp or an error toast, which is clearer for screen reader users.
+
+The obvious objection is "isn't undo just `−1`?". It is answered by making the two controls different claims about reality:
+
+- **`GOAL_REMOVED`** — the score is genuinely lower. The goal was disallowed, overturned on review, or awarded to the wrong side. A real match event that stays in the record.
+- **`UNDO`** — the previous entry was a data-entry error. It references the event it reverted.
+
+Same arithmetic, different audit meaning. An operator's audit trail has to distinguish "the goal didn't count" from "I fat-fingered it". The log renders the two distinctly and the README states the distinction.
+
+### D4. Undo — single step, permanent, score changes only
+
+`lastChange: { prev: ScoreSnapshot } | null` per match. **Never an array.** After undoing there is nothing further to undo until the next change, and the button disables.
+
+Two reasons:
+
+1. It matches the brief's singular wording, "undo last score change".
+2. It keeps the later event-log commit purely **additive** rather than a rewrite of a history stack shipped one commit earlier — which is what preserves the brief's requirement that the feature commit be "a second, larger slice of work".
+
+Undo reverts the last score change of **either** kind (`GOAL` or `GOAL_REMOVED`). `MATCH_FINISHED` is explicitly **not** undoable, because finish is terminal (D5).
+
+The event type union stays open so other undoable kinds can be added later, but no reverter-registry abstraction is built for events that do not exist yet.
+
+### D5. Finish is terminal
+
+Finished matches are immutable: no score edits, no undo, read-only event log.
+
+The consequence is that a mis-click is unrecoverable, so Finish carries a confirmation step. The immutability rule is stated flatly in the README rather than left for a reviewer to discover.
+
+### D6. Validation on start
+
+- Home ≠ away.
+- A team cannot appear in two in-progress matches.
+
+The second rule subsumes "no duplicate in-progress fixture", so one rule is implemented and the README documents that it covers both. Unavailable teams are disabled in the selects with the reason surfaced, rather than only rejected on submit.
+
+The preset team list contains **all ten example-scenario teams** — Mexico, Canada, Spain, Brazil, Germany, France, Uruguay, Italy, Argentina, Australia — so a reviewer can reproduce the brief's expected ordering by hand.
+
+### D7. State — zustand, justified honestly
+
+zustand with the `persist` middleware. The justification given in the README is **ergonomics, persistence middleware, and a store that is testable outside React** — explicitly *not* performance.
+
+The performance argument is deliberately not made. Nothing in this application ticks: there are no timers and no feed, so renders occur only on operator interaction, and at roughly six concurrent matches the difference against `useReducer` + context is unmeasurable. Claiming otherwise invites "how many cards before it matters, and did you measure?", which has no good answer.
+
+The container selects the ordered list of match **ids** with a shallow comparator; each card selects its own match by id. This is framed as clarity of data flow, with the negligible re-render saving noted as a side effect rather than the reason.
+
+### D8. Persistence
+
+Storage key `srad-scoreboard`, `version: 1`, bumped to `2` when `events[]` lands, with a migration giving pre-existing matches an empty log. Corrupt or unparseable stored state resets to empty rather than white-screening the application. Documented in the README under the brief's "Data:" line.
+
+There is **no retention policy** on finished matches or event history. This is recorded in the README as an accepted trade-off — a single matchday does not need one. A "clear finished" button is deliberately not added, because it would invite feature-count questions against "exactly one additional operation".
+
+### D9. Accessibility
+
+- `<ol>` / `<li>` for both summaries; `<details>` / `<summary>` for collapsible regions.
+- Radix Dialog for the start and finish-confirm dialogs (focus trap, Escape, labelled title and description). Radix Select with an associated `<Label>`.
+- Buttons carry real accessible names — `aria-label="Add goal for Spain"`, not `+`.
+- **One** application-level `aria-live="polite"` region announcing the most recent change ("Spain 2, Brazil 1"). Not one per card: six simultaneous live regions is screen reader spam.
+- The scrollable log container is `tabIndex={0}` with an accessible name, so it is keyboard-reachable.
+- Finishing a match removes its card, so focus moves to the in-progress section heading and the change is announced.
+- `prefers-reduced-motion` is respected.
+- Any compromise found during implementation gets a README line rather than being quietly dropped.
+
+### D10. Testing
+
+- `src/domain/ordering.test.ts` — the pure sort. **Reproduces the brief's example scenario exactly**, asserting `[Uruguay, Spain, Mexico, Argentina, Germany]`, plus tie cases and the `seq` tiebreak.
+- `src/store/*.test.ts` — start / update score / finish / undo, validation rules, persist rehydrate, corrupt-state recovery, injected clock and id generator.
+- Component tests (RTL) — `StartMatchDialog`, `MatchCard`, `EventLog`, queried by role and accessible name, which also serves as evidence for the accessibility claims.
+- Integration test (RTL) — start → score → order changes → finish → leaves the summary.
+- Playwright, three flows only, run via `npm run test:e2e` and never as part of `npm test`: the example scenario driven through the real UI; finishing moves a match to the finished group; reload preserves state. Runs against `build` + `preview`; the README documents `npx playwright install`.
+
+Playwright is optional per the brief and is treated as a liability unless it is green and fast — a reviewer who clones the repository and hits a browser-download failure is a net loss, so it stays behind its own script with documented setup.
+
+---
+
+## Commit plan
+
+Each commit is self-contained and green.
+
+| # | Commit | Contents | Status |
+|---|---|---|---|
+| 1 | `docs: add PDR and AI usage log` | `PDR.md`, `AI.md` | done |
+| 2 | `chore: replace template README, tidy dependencies` | Real README skeleton, `shadcn` → devDependencies, resolve the `cn` package question, drop the empty `e2e/` placeholder | pending |
+| 3 | `feat: match domain model and summary ordering` | Types, `compareMatches`, ordering tests including the example scenario | pending |
+| 4 | `feat: scoreboard store with localStorage persistence` | zustand slice, start / score / finish, validation, `persist` v1, store tests | pending |
+| 5 | `feat: start, update score and finish UI` | Dialogs, `<ol>` grid, cards, finished group, accessibility wiring, RTL tests | pending |
+| 6 | `feat: undo last score change` | The section 5 additional operation | pending |
+| 7 | `feat: per-match event log with audit trail` | **The distinct feature commit.** Event union, persist v2 + migration, collapsible scrollable log, `GOAL_REMOVED` vs `UNDO` rendering, tests, and its README section — all in this one commit | pending |
+| 8 | `test: playwright end-to-end coverage for core flows` | Three flows | pending |
+| 9 | `docs: finalise README and AI.md` | Assumptions, trade-offs, requirement map, accessibility compromises, run instructions | pending |
+
+`AI.md` is appended in every commit, not written at the end. The Status column above is updated as part of each commit, so this document stays an accurate record of where the work is.
+
+### Progress log
+
+Appended per commit: what landed, what deviated from this document, and any decision taken during implementation that this PDR did not anticipate.
+
+- **Commit 1 — `docs: add PDR and AI usage log`.** Landed as specified. `PDR.md` and `AI.md` created; no application code. Note: writing these two documents became commit 1, so every implementation step shifted down by one relative to the plan agreed during the brainstorm.
+
+---
+
+## Verification
+
+```bash
+npm install
+npm run dev          # http://127.0.0.1:5173
+npm run build        # tsc -b && vite build
+npm run lint
+npm test             # Vitest — ordering + store + components + integration
+npx playwright install
+npm run test:e2e     # builds, previews, runs desktop + Pixel 5 projects
+```
+
+Manual checks:
+
+1. Start the five example matches in the brief's order and set their scores; confirm the grid reads Uruguay → Spain → Mexico → Argentina → Germany.
+2. Finish one match; confirm it leaves the in-progress summary and appears in the collapsed finished group.
+3. Reload; confirm state survives.
+4. Tab through a card with no mouse; confirm every control is reachable and named.
+5. Narrow the viewport to ~375px; confirm the layout is usable.
