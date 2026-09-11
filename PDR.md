@@ -140,8 +140,20 @@ There is **no retention policy** on finished matches or event history. This is r
 - **One** application-level `aria-live="polite"` region announcing the most recent change ("Spain 2, Brazil 1"). Not one per card: six simultaneous live regions is screen reader spam.
 - The scrollable log container is `tabIndex={0}` with an accessible name, so it is keyboard-reachable.
 - Finishing a match removes its card, so focus moves to the in-progress section heading and the change is announced.
-- `prefers-reduced-motion` is respected.
+- `prefers-reduced-motion` is respected in two places, because one is not enough. The re-order animation (D11) checks it in JavaScript, and a global rule in `src/index.css` collapses the `tw-animate-css` dialog and card animations, which do not consult the preference on their own. Durations are collapsed rather than zeroed so animation and transition end events still fire.
 - Any compromise found during implementation gets a README line rather than being quietly dropped.
+
+### D11. Re-order animation
+
+When a goal changes the ranking, the summary re-orders instantly and the card the operator was aiming at is replaced under the cursor by a different match. The next click lands on the wrong team.
+
+Cards animate to their new positions (FLIP: measure, invert, play, via the Web Animations API), 180ms, ease-out — long enough to follow a card across the grid, short enough not to hold up someone scoring quickly.
+
+**The animation alone does not fix the mis-click**, because during it the target is still moving. Pointer events are therefore held on the list while cards are in flight. A click swallowed for 180ms costs a second click; a click landing on the wrong match records a goal against the wrong team and needs undoing. The cheaper failure is the one to choose. Keyboard interaction is untouched — `pointer-events` does not apply to it, and a keyboard user is not aiming at a moving target.
+
+Under `prefers-reduced-motion: reduce` nothing animates *and* nothing is held: holding clicks for an animation that is not running would be a pure penalty.
+
+Positions are re-measured after every render rather than only when the order changes, so a viewport resize cannot leave stale coordinates that produce a nonsense animation later; and any in-flight animation is cancelled before measuring, since a running transform would otherwise be read as a card's settled position.
 
 ### D10. Testing
 
@@ -164,7 +176,7 @@ Each commit is self-contained and green.
 | 1 | `docs: add PDR and AI usage log` | `PDR.md`, `AI.md` | done |
 | 2 | `feat: match domain model and summary ordering` | Domain types, team roster, `compareInProgress` / `compareFinished`, ordering tests including the brief's example scenario | done |
 | 3 | `feat: scoreboard store with localStorage persistence` | zustand slice, start / score / finish, validation, `persist` v1 with guarded rehydration, store tests | done |
-| 4 | `feat: start, update score and finish UI` | Dialogs, `<ol>` grid, cards, finished group, accessibility wiring, RTL tests | pending |
+| 4 | `feat: start, update score and finish UI` | Dialogs, `<ol>` grid, cards, finished group, accessibility wiring, RTL tests | done |
 | 5 | `feat: undo last score change` | The section 5 additional operation | pending |
 | 6 | `feat: per-match event log with audit trail` | **The distinct feature commit.** Event union, persist v2 + migration, collapsible scrollable log, `GOAL_REMOVED` vs `UNDO` rendering, tests | pending |
 | 7 | `test: playwright end-to-end coverage for core flows` | Three flows | pending |
@@ -221,6 +233,34 @@ Appended per commit: what landed, what deviated from this document, and any deci
   **Test quality check.** Four mutants were run against the suite: the terminal-finish guard removed (3 failures), the zero floor removed (1), start validation bypassed (3), and the no-op short-circuit removed (1). Each was caught.
 
   `npm test` 69 passed · `npx tsc -b` clean · `npm run lint` clean · `npm run build` green.
+
+- **Commit 4 — `feat: start, update score and finish UI`.** The app is now usable. Selectors, an announcer, five components, three test files.
+
+  `src/store/selectors.ts` — summaries hand back **ids**, not matches. A card subscribes to its own match; the board subscribes only to the ranked list of ids. Adding a goal that does not move a match re-renders one card rather than the board. As D7 requires, this is not claimed as a performance decision — at six matches it saves nothing measurable — it is here because it makes the data flow say what it means.
+
+  `src/a11y/` — one polite live region for the whole board. Announcements read the score back *from the store* rather than predicting it, so the announcement can never disagree with the screen. Re-announcing an identical string needs a trailing zero-width space, since most screen readers suppress an unchanged live region and "Spain 2 - 1 Brazil" twice in a row would otherwise be silent the second time.
+
+  `src/components/scoreboard/` — `StartMatchDialog`, `MatchCard`, `FinishedMatchCard`, `FinishMatchDialog`, `Scoreboard`. The summary is an `<ol>` laid out with `display: grid` exactly as D2 requires, so the ranking survives for anyone not looking at the screen. Finished matches sit in a `<details>`, closed, with a count.
+
+  **Deviations from this document, and one correction made mid-commit:**
+  - **D9 assumed cards would be labelled with `aria-labelledby`. They are not.** The vendored shadcn `Card` and `CardTitle` are plain `<div>`s with no polymorphism, so `aria-labelledby` on them points at nothing announceable. Each card now carries a real `<h3>` instead, which is also how a screen reader user actually moves through a list of cards. A test asserts the `h1` → `h2` → `h3` hierarchy so this cannot silently regress.
+  - **A self-inflicted accessibility bug was caught and fixed before it landed.** The score was first written as `aria-hidden`, with "currently 2" stuffed into each button's label to compensate. That hides the score from assistive technology and makes every button verbose. The score is now ordinary readable text and the labels are plain: "Add a goal for Spain".
+  - **`−` at zero uses the real `disabled` attribute**, which removes it from the tab order. `aria-disabled` would keep it focusable and is arguably the more accessible choice, but it needs manual click suppression and an explanation of why nothing happened. This is a **documented accessibility compromise** for the README, not an oversight.
+  - `vite.config.ts` now pins `TZ: 'UTC'` for tests. Times are rendered for the operator, so a test asserting on one must not depend on the machine running it.
+
+  **Verified in a real browser, not only jsdom.** The full example scenario was driven through the built app in headless Chromium — five dialogs, thirty-four goal clicks — and produced `[Uruguay, Spain, Mexico, Argentina, Germany]` with no console errors. Screenshots at 1280px and 390px confirmed the 3-column and 1-column layouts. One apparent missing button in a screenshot was measured rather than eyeballed and proved to be a PNG artifact: both controls were present, visible and enabled at the same x-position.
+
+  **Test quality check.** Five mutants, all caught: the `−` never disabled (1 failure), the flag exposed to assistive technology (1), rank badges reversed (1), focus not returned after finishing (1), and finish skipping its confirmation (5).
+
+  **Added mid-commit at the candidate's request:** a re-order animation, so a card that changes rank can be followed rather than teleporting. See D11. The request was for the animation; the pointer-event hold was added on top, because an animation on its own makes the movement legible without preventing the mis-click it was asked to prevent — during it the target is still moving.
+
+  The animation is covered by eight unit tests against a mocked layout and Web Animations API (jsdom has neither), including the two that matter most: nothing animates under reduced motion, and nothing is held either.
+
+  **Verified in a real browser, both ways.** With motion allowed: four animations running mid-reorder and `pointer-events: none` on the list, returning to `auto` once settled. Under emulated `prefers-reduced-motion: reduce`: zero animations, pointer events never held, ordering still correct.
+
+  **That check found a real gap in D9.** Under `reduce`, two animations were still running — not from the new hook, which had correctly stayed out of it, but from `tw-animate-css`, which powers the dialog and card animations and does not consult the preference on its own. The design claimed reduced motion was respected while the app still animated. A global `@media (prefers-reduced-motion: reduce)` rule in `src/index.css` now collapses them, and re-running the check confirmed zero animations. This is exactly the class of thing jsdom cannot catch.
+
+  `npm test` 105 passed · `npx tsc -b` clean · `npm run lint` clean · `npm run build` green.
 
 
 ---

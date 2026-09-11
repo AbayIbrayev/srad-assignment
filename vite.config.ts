@@ -16,6 +16,9 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     globals: true,
+    // Times are rendered for the operator, so a test asserting on one must not
+    // depend on the machine that runs it.
+    env: { TZ: 'UTC' },
     setupFiles: ['./vitest.setup.ts'],
     exclude: ['**/node_modules/**', '**/dist/**', 'e2e/**'],
   },

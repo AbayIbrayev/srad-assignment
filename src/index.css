@@ -128,3 +128,22 @@
     @apply font-sans;
     }
 }
+/*
+ * The dialog and card animations come from tw-animate-css, which does not
+ * consult the user's motion preference on its own. The reorder animation is
+ * handled in JavaScript, but everything else needs this: without it the app
+ * claims to respect reduced motion while still animating.
+ *
+ * Durations are collapsed rather than set to zero so that animation and
+ * transition end events still fire, and anything waiting on them still runs.
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

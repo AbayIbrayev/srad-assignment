@@ -159,3 +159,29 @@ State, validation and persistence. Still no UI.
 - `crypto.randomUUID` does not exist outside a secure context, which includes opening the dev server from a phone on the LAN — precisely what someone does to check a responsive layout. The id generator falls back instead of throwing.
 - No `reset` action was added to the store. Tests build fresh stores through the factory, and a production reset would be another operation a reviewer could count against "exactly one additional operation" — the same argument the design already makes against a "clear finished" button.
 - `startMatch` returns an outcome rather than throwing. A rejected start is an expected result of operator input, not an exceptional condition, and the caller needs the reason in order to render it.
+
+### Round 10 — commit 4, the UI
+
+The first commit with anything on screen: pickers, cards, the ranked grid, the finished section, and the accessibility wiring the design had been promising since round 1.
+
+**A mistake I made and caught in the same commit.** The first version of the match card marked the score `aria-hidden` and compensated by writing "currently 2" into every button label. That is backwards: it hides the score from assistive technology entirely and makes each button read like a sentence. The score is now ordinary readable text and the labels are plain. Worth recording because it is the failure mode of treating accessibility as attributes to sprinkle rather than as *what the page says when you cannot see it*.
+
+**Where the design document turned out to be wrong.** `PDR.md` assumed each card would be labelled with `aria-labelledby`. The vendored shadcn `Card` and `CardTitle` are plain `div`s with no way to change the element, so `aria-labelledby` on them points at nothing a screen reader will announce. Each card now carries a real `<h3>`, which is also how someone using a screen reader actually navigates a list of cards. A test pins the `h1` → `h2` → `h3` hierarchy so it cannot quietly regress. The design was amended rather than the discrepancy ignored.
+
+**A deliberate accessibility compromise, for the README.** The `−` control uses the real `disabled` attribute at zero, which takes it out of the tab order. `aria-disabled` would keep it focusable and is arguably better, but it needs manual click suppression and some way of explaining why nothing happened. The simpler behaviour was chosen knowingly, and it is a compromise to disclose rather than an oversight to hide.
+
+**Verified in a real browser rather than only in jsdom.** jsdom passing is not evidence that a layout works. The whole example scenario was driven through the built app in headless Chromium — five dialogs and thirty-four goal clicks — and produced the brief's exact expected ordering with no console errors, plus screenshots at 1280px and 390px. One row in a screenshot looked like it was missing a button; rather than guess, the element was measured in the browser and proved present, visible and enabled. A PNG artifact, not a bug — but the check cost a minute and the alternative was shipping on a squint.
+
+**Test quality, checked again.** Five mutants introduced and reverted: the minus button never disabled, the flag exposed to assistive technology, the rank badges reversed, focus not returned after finishing, and finishing skipping its confirmation. Every one was caught, the last by five separate tests.
+
+### Round 11 — re-order animation
+
+I asked for a transition when matches re-order, on the grounds that the board currently teleports and an operator can click the wrong match because the re-order is instant. I also asked for reduced motion to be respected.
+
+**What was pushed back on — the premise, partly.** An animation makes the movement *legible*, so the eye can follow a card across the grid, but it does not by itself prevent the mis-click: during the animation the target is still moving, and a click can still land on the wrong card. So the pointer events are held on the list for the 180ms the cards are in flight. The reasoning offered, which I accepted: a click swallowed for 180ms costs a second click, while a click landing on the wrong match records a goal against the wrong team and has to be undone — the cheaper failure is the right one to choose. Keyboard interaction is untouched, since `pointer-events` does not apply to it and a keyboard user is not aiming at a moving target.
+
+**What the browser check found that the tests could not.** The animation is implemented as FLIP through the Web Animations API, and jsdom has neither a layout engine nor that API, so the eight unit tests run against mocks. Mocks prove the logic, not the behaviour, so it was also driven in headless Chromium with motion emulated both ways.
+
+That found a real gap in the design. Under `prefers-reduced-motion: reduce`, two animations were still running — not the new one, which had correctly stayed out of it, but the dialog and card animations from `tw-animate-css`, which does not consult the preference on its own. `PDR.md` had claimed since the design phase that reduced motion was respected, and that claim was simply false for most of the app's motion. A global media rule now collapses those durations, and re-running the check confirmed zero animations under `reduce`.
+
+The lesson is the one this project keeps re-learning: a green jsdom suite is evidence about logic, not about what the browser does. The two checks that mattered here — "does it actually animate" and "does it actually stop animating" — were both invisible to the test suite that covers the same code.
