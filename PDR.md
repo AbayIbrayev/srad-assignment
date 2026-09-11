@@ -60,7 +60,17 @@ export const compareMatches = (a: Match, b: Match) =>
 
 **"You define what 'start' means for ordering":** start is the moment the operator registers the match. Registration order is authoritative; wall-clock time is presentational.
 
-`now()` and `id()` are injected into the store so tests are deterministic.
+`now()` and the id generators are injected into the store so tests are deterministic.
+
+#### The brief's example scenario, as the app renders it
+
+![The five example matches ranked in the summary: Uruguay 6-6 Italy, Spain 10-2 Brazil, Mexico 0-5 Canada, Argentina 3-1 Australia, Germany 2-2 France](./docs/example-scenario.png)
+
+Not a mock-up. This image is written by the end-to-end spec that drives the scenario through the interface — five dialogs and thirty-four goal clicks — so it cannot drift from what the app actually does: if the ordering broke, the spec would fail before it reached the screenshot.
+
+Both ties are legible rather than merely correct, which is why the kickoff times are staggered. Uruguay (19:15) sits above Spain (19:05) on twelve goals, and Argentina (19:20) above Germany (19:10) on four — the rule being applied, not just its result.
+
+Kept reproducible: the clock and the browser timezone are pinned, the viewport is fixed rather than inherited from a device preset, and the capture waits for the re-order animation to come to rest — without which it caught two cards overlapping mid-flight. Re-running produces a byte-identical file.
 
 ### D2. Layout — a grid, but semantically a list
 
@@ -179,7 +189,7 @@ Each commit is self-contained and green.
 | 4 | `feat: start, update score and finish UI` | Dialogs, `<ol>` grid, cards, finished group, accessibility wiring, RTL tests | done |
 | 5 | `feat: undo last score change` | The section 5 additional operation | done |
 | 6 | `feat: per-match event log with audit trail` | **The distinct feature commit.** Event union, persist v3 + migration, collapsible scrollable log, `GOAL_REMOVED` vs `UNDO` rendering, tests | done |
-| 7 | `test: playwright end-to-end coverage for core flows` | Three flows | pending |
+| 7 | `test: playwright end-to-end coverage for core flows` | Three flows on desktop and Pixel 5, plus the example-scenario screenshot used in the docs | done |
 | 8 | `docs: finalise README` | Assumptions, trade-offs, requirement map, accessibility compromises, run instructions, feature documentation — **authored by the candidate, not generated** | pending |
 
 `AI.md` is appended in every commit, not written at the end. The Status column above is updated as part of each commit, so this document stays an accurate record of where the work is.
@@ -295,6 +305,25 @@ Appended per commit: what landed, what deviated from this document, and any deci
   **Verified in a real browser.** Collapsed by default; opened, it reads newest-first — `Undone: Goal — Brazil` / `Goal — Brazil` / `Goal removed — Spain` / `Goal — Spain` / `Match started`, each with its time and the score that resulted. The region takes keyboard focus, a finished card keeps its full log, persisted state reports `version: 3`, and there were no page errors.
 
   `npm test` 141 passed · `npx tsc -b` clean · `npm run lint` clean · `npm run build` green.
+
+- **Commit 7 — `test: playwright end-to-end coverage for core flows`.** Three specs, run against the production build on desktop Chrome and a Pixel 5.
+
+  The three were chosen as the ones unit tests *cannot* stand in for, rather than as a second pass over the same ground:
+  1. **The example scenario driven through real clicks** — five dialogs and thirty-four goal buttons — rather than seeded into the store. The Vitest ordering test proves the comparator; this proves the operator can actually reach that result through the interface.
+  2. **A finished match leaving the summary and keeping its record**, including opening its log and finding the finish entry.
+  3. **State surviving a page reload**, which jsdom cannot exercise: it covers the real storage round-trip, and then that undo is still armed and still correct afterwards.
+
+  Auto-waiting turned out to matter. While cards animate to new positions the list stops receiving pointer events, so Playwright waits rather than clicking whatever has slid under the cursor — the same protection D11 gives the operator, confirming from the outside that the hold does what it claims.
+
+  **Test quality check.** Reversing the ordering tiebreak made the first spec fail, so the end-to-end coverage is not vacuous either.
+
+  Kept deliberately cheap and out of the way: 6 tests in about 9 seconds, behind `npm run test:e2e`, never part of `npm test`. A reviewer who clones and runs `npm test` cannot be tripped by a missing browser download; the README documents `npx playwright install` for anyone who wants them.
+
+  **Added at the candidate's request:** the ordering spec now also writes `docs/example-scenario.png`, the screenshot shown in D1. Generating it from the test rather than capturing it by hand means the documentation cannot drift from the behaviour — a broken ordering fails the spec before it reaches the screenshot.
+
+  Three things were needed to make it a committable artefact rather than a source of diff noise: the clock is pinned per kickoff (which also staggers the start times, so the tiebreak is visible rather than merely correct), the browser timezone is pinned to UTC so the rendered times do not depend on the machine, and the capture waits for `document.getAnimations()` to drain. That last one was not a precaution — the first attempt captured two cards overlapping mid-flight, because the final assertion passes as soon as the text settles, which is before the cards have stopped moving. It is written from the desktop project only, so the committed image is one snapshot rather than whichever browser finished last. Re-running produces a byte-identical file.
+
+  `npm test` 141 passed · `npm run test:e2e` 6 passed · `npx tsc -b` clean · `npm run lint` clean · `npm run build` green.
 
 
 ---

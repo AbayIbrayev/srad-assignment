@@ -11,7 +11,19 @@ export default defineConfig({
     trace: 'on-first-retry',
   },
   projects: [
-    { name: 'desktop', use: { ...devices['Desktop Chrome'] } },
+    // Viewport pinned rather than inherited from the device preset: the
+    // documentation screenshot is taken from this project and its dimensions
+    // should not move when Playwright updates its device list.
+    {
+      name: 'desktop',
+      use: {
+        ...devices['Desktop Chrome'],
+        viewport: { width: 1280, height: 720 },
+        // Pinned so the kickoff times rendered in the screenshot are the same
+        // on any machine that regenerates it.
+        timezoneId: 'UTC',
+      },
+    },
     { name: 'mobile', use: { ...devices['Pixel 5'] } },
   ],
   webServer: {

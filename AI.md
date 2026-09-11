@@ -221,3 +221,31 @@ The second, larger slice of work the brief asks for, in one commit: the event mo
 **Test quality, checked as usual.** Five mutants, all caught: undo deleting what it reverted, a removed goal logged as an ordinary goal, the log rendered oldest-first, the scroll region not focusable, and the migration seeding an empty log.
 
 **Verified in a real browser.** Collapsed by default, and opened it reads newest-first with every entry timestamped and carrying the score that resulted. The two entries that matter render as visibly different sentences. The region takes keyboard focus, a finished match keeps its whole log, and persisted state reports version 3.
+
+### Round 14 — commit 7, end-to-end coverage
+
+Playwright is optional under the brief, so it was treated as something that has to earn its place rather than something to add for completeness. Three specs, chosen as the ones the unit tests genuinely cannot stand in for:
+
+- The example scenario driven through real clicks — five dialogs and thirty-four goal buttons — instead of seeded into the store. The Vitest test proves the comparator is right; this proves an operator can actually reach that ordering through the interface.
+- A finished match leaving the summary and keeping its record, including opening the log and finding the finish entry.
+- State surviving a page reload, which jsdom cannot exercise at all: the real storage round-trip, and undo still armed and still correct on the other side of it.
+
+**Something the end-to-end run confirmed that nothing else could.** While cards animate to their new positions the list stops receiving pointer events, and Playwright's auto-waiting means it waits instead of clicking whatever has slid under the cursor. That is the same protection the hold is supposed to give a human operator, observed from outside the implementation rather than asserted by a test that mocks it.
+
+**Checked for vacuousness like everything else.** Reversing the ordering tiebreak makes the first spec fail, so the end-to-end layer is not just watching itself pass.
+
+**Kept cheap on purpose.** Six tests in about nine seconds, behind their own script and never part of `npm test`, so a reviewer who clones the repository and runs the test command cannot be tripped by a missing browser download. An optional extra that breaks a first-time run would be worse than not having it.
+
+### Round 15 — the example scenario as a documentation screenshot
+
+I asked for a single snapshot of the brief's test case in the docs, produced by the end-to-end test.
+
+**Why generate it from the test rather than capture it by hand.** A screenshot pasted into documentation is a claim about the app frozen at the moment someone took it, and it rots silently. Written by the spec that drives the scenario through the interface, it cannot disagree with the behaviour: if the ordering broke, the spec fails before it ever reaches the screenshot.
+
+**What made it a committable artefact rather than diff noise.** Three things, and one of them was a real defect rather than a precaution:
+
+- The clock is pinned per kickoff. This also staggers the five start times, which turned out to be the more valuable half: with distinct kickoffs the image shows the tiebreak being *applied* — Uruguay 19:15 above Spain 19:05 on twelve goals, Argentina 19:20 above Germany 19:10 on four — rather than only the resulting order.
+- The browser timezone is pinned to UTC, so regenerating the file on another machine does not shift every rendered time.
+- The capture waits for the animations to drain. **The first attempt produced a picture of two cards overlapping in mid-air.** The final assertion passes as soon as the text settles, which is before the cards have finished sliding into place. Nothing in the test suite was wrong; the test was simply asking a different question than the screenshot was.
+
+That last one is a small instance of a theme running through this whole project: a green assertion tells you what it asserted, and nothing else. Re-running now produces a byte-identical file, which was checked rather than assumed.
