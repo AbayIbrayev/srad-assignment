@@ -102,3 +102,43 @@ Brainstorm converged. [PDR.md](./PDR.md) was written and agreed, and implementat
 I asked for the agreed plan to be committed as `PDR.md` and for this file to be brought up to date.
 
 **What was pushed back on:** the brief requires `README.md` and `AI.md`; `PDR.md` is additional. That is fine and shows process, but it must not become a second, diverging copy of the README. Agreed split — `PDR.md` is the design record (decisions, rationale, rejected alternatives), `README.md` is reviewer-facing (assumptions, trade-offs, requirement map, feature explanation, accessibility compromises, run instructions), and `AI.md` is the process record. `PDR.md` links to `README.md` and not the reverse, so a reviewer who reads only the README misses nothing required.
+
+### Round 6 — commit 2, and two pieces of AI pushback that turned out to be wrong
+
+I asked for the agreed plan committed as `PDR.md`, this file brought up to date, and implementation started commit by commit — with the PDR's progress kept current at every commit so the work stays on track.
+
+**What changed:** a Status column and a Progress log were added to `PDR.md`, updated as part of each commit rather than reconstructed afterwards.
+
+**Where the AI's earlier criticism did not survive inspection.** Three of the "repository hygiene" items raised in round 1 were checked against the actual repository before acting on them, and two were wrong:
+
+- *"`src/lib/utils.ts` uses an unusual third-party `cn` package instead of `clsx` + `tailwind-merge`."* Wrong. `cn` is [`shadcn-ui/cn`](https://github.com/shadcn-ui/cn) — first-party shadcn tooling, a compiled drop-in replacement for that exact pair, and what the current shadcn CLI generates. Nothing to fix; it is documented in the README instead.
+- *"`shadcn` is in `dependencies` and belongs in `devDependencies`."* Wrong. `src/index.css` imports `shadcn/tailwind.css`, so the package is a build input to the production bundle. Moving it would break `npm ci --omit=dev`. Also documented rather than changed.
+- *"The empty `e2e/` directory is committed."* A non-issue — git does not track empty directories, and `playwright.config.ts` points `testDir` at it, so it stays until the end-to-end commit.
+
+This is worth recording honestly rather than quietly dropping, because it is the same lesson in both directions: the model's confident criticism needed verifying against the repository exactly as much as my own plan needed challenging. The instruction to be skeptical cuts both ways, and a plausible-sounding review finding is still a claim to check, not a fact.
+
+**On the README:** I decided the README is mine to write, not something to generate — it carries my assumptions, my trade-offs and my reasoning, which is exactly the part of the exercise being assessed. It is therefore deferred to the end and left out of the implementation commits. The three tooling notes above are facts worth putting in it, but the text is mine.
+
+### Round 7 — commit 2, the domain model
+
+Implementation started. Domain layer only: no store, no UI.
+
+`Match` was modelled as a **discriminated union** of `InProgressMatch` and `FinishedMatch` rather than a status field sitting beside a nullable `finishedAt`. A finished match always has a finish time and an in-progress one never does, so the illegal combinations stop being merely unlikely and become unrepresentable.
+
+Two deliberate deviations from `PDR.md` were made during implementation and recorded in its progress log rather than silently absorbed:
+
+- The PDR sketch had flat `home` / `away` goal fields on `Match`. The implementation nests them as `score: Score`, because the undo snapshot in D4 is exactly a `Score` — better one shape than two shapes that happen to agree.
+- `Match.homeTeam` is a plain `string`, not a union of the ten hard-coded team names. A real deployment loads its roster from a feed, and the domain model should not be coupled to a list that exists only for this exercise. The union is exported separately for the team picker.
+
+**Test quality was checked rather than assumed.** Thirteen tests passing proves very little on its own, so the suite was re-run against a deliberately broken build with the ordering tiebreak reversed. Five tests failed, including the one that reproduces the brief's example scenario. The suite catches the regression it exists to catch instead of passing vacuously. This is a habit worth keeping for every test the AI writes: a green suite written by the same tool that wrote the code is evidence of agreement, not of correctness.
+
+### Round 8 — team flags
+
+I asked for emoji flags on the teams to make the UI more interactive. This was folded into the domain commit rather than queued as a later change, because it belongs with the roster it describes.
+
+**What was pushed back on — not the idea, but two consequences of it:**
+
+- **Screen readers.** Regional indicator pairs are announced inconsistently, anywhere from the country name to "regional indicator symbol letter A". A flag can therefore never be a team's only label. Every flag is marked `aria-hidden` with the team name beside it as real text, so the flags stay on the right side of the brief's accessibility requirement instead of quietly working against it.
+- **Windows Chrome renders no flag glyphs at all** and falls back to the underlying letter pair, so "🇦🇷" shows as "AR". That degrades to a readable abbreviation rather than a broken box, which makes it an accepted trade-off rather than a blocker — but it is the kind of thing a reviewer discovers on their own machine and marks down if it looks unintentional, so it goes in the README as a known limitation.
+
+**Implementation note.** The flag lookup is derived from the roster rather than written as a second literal beside it, so a team cannot be added without a flag. It returns `undefined` for an unknown name rather than a placeholder, so a match persisted under an older roster renders its team name plainly instead of borrowing another country's flag. Tests assert each flag is exactly two codepoints in the regional-indicator range — a stray ASCII letter or a half-formed pair renders as text and would otherwise slip through unnoticed.

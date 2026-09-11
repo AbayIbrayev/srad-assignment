@@ -111,6 +111,13 @@ The second rule subsumes "no duplicate in-progress fixture", so one rule is impl
 
 The preset team list contains **all ten example-scenario teams** — Mexico, Canada, Spain, Brazil, Germany, France, Uruguay, Italy, Argentina, Australia — so a reviewer can reproduce the brief's expected ordering by hand.
 
+Each team carries a regional-indicator **flag emoji**, as a scanning aid: an operator watching six cards picks out a flag faster than reading a name. Two constraints follow and are load-bearing wherever a team is rendered:
+
+- The flag is **decorative**. It is marked `aria-hidden` with the team name beside it as real text. Screen readers announce regional indicator pairs inconsistently — anything from the country name to "regional indicator symbol letter A" — so a flag is never a team's only label. This keeps the flags on the right side of the brief's accessibility requirement rather than working against it.
+- **Windows Chrome ships no glyphs for these** and renders the underlying letter pair ("AR", "BR") instead. That degrades to a readable abbreviation rather than a broken box, which makes it an accepted trade-off rather than a blocker. Recorded in the README so a reviewer on Windows knows it is known.
+
+The flag lookup is derived from the roster rather than kept as a second literal, so a team cannot be added without one, and it returns `undefined` for an unknown name — a match persisted under an older roster renders its team name plainly rather than borrowing another country's flag.
+
 ### D7. State — zustand, justified honestly
 
 zustand with the `persist` middleware. The justification given in the README is **ergonomics, persistence middleware, and a store that is testable outside React** — explicitly *not* performance.
@@ -155,14 +162,13 @@ Each commit is self-contained and green.
 | # | Commit | Contents | Status |
 |---|---|---|---|
 | 1 | `docs: add PDR and AI usage log` | `PDR.md`, `AI.md` | done |
-| 2 | `chore: replace template README, tidy dependencies` | Real README skeleton, `shadcn` → devDependencies, resolve the `cn` package question, drop the empty `e2e/` placeholder | pending |
-| 3 | `feat: match domain model and summary ordering` | Types, `compareMatches`, ordering tests including the example scenario | pending |
-| 4 | `feat: scoreboard store with localStorage persistence` | zustand slice, start / score / finish, validation, `persist` v1, store tests | pending |
-| 5 | `feat: start, update score and finish UI` | Dialogs, `<ol>` grid, cards, finished group, accessibility wiring, RTL tests | pending |
-| 6 | `feat: undo last score change` | The section 5 additional operation | pending |
-| 7 | `feat: per-match event log with audit trail` | **The distinct feature commit.** Event union, persist v2 + migration, collapsible scrollable log, `GOAL_REMOVED` vs `UNDO` rendering, tests, and its README section — all in this one commit | pending |
-| 8 | `test: playwright end-to-end coverage for core flows` | Three flows | pending |
-| 9 | `docs: finalise README and AI.md` | Assumptions, trade-offs, requirement map, accessibility compromises, run instructions | pending |
+| 2 | `feat: match domain model and summary ordering` | Domain types, team roster, `compareInProgress` / `compareFinished`, ordering tests including the brief's example scenario | done |
+| 3 | `feat: scoreboard store with localStorage persistence` | zustand slice, start / score / finish, validation, `persist` v1, store tests | pending |
+| 4 | `feat: start, update score and finish UI` | Dialogs, `<ol>` grid, cards, finished group, accessibility wiring, RTL tests | pending |
+| 5 | `feat: undo last score change` | The section 5 additional operation | pending |
+| 6 | `feat: per-match event log with audit trail` | **The distinct feature commit.** Event union, persist v2 + migration, collapsible scrollable log, `GOAL_REMOVED` vs `UNDO` rendering, tests | pending |
+| 7 | `test: playwright end-to-end coverage for core flows` | Three flows | pending |
+| 8 | `docs: finalise README` | Assumptions, trade-offs, requirement map, accessibility compromises, run instructions, feature documentation — **authored by the candidate, not generated** | pending |
 
 `AI.md` is appended in every commit, not written at the end. The Status column above is updated as part of each commit, so this document stays an accurate record of where the work is.
 
@@ -171,6 +177,34 @@ Each commit is self-contained and green.
 Appended per commit: what landed, what deviated from this document, and any decision taken during implementation that this PDR did not anticipate.
 
 - **Commit 1 — `docs: add PDR and AI usage log`.** Landed as specified. `PDR.md` and `AI.md` created; no application code. Note: writing these two documents became commit 1, so every implementation step shifted down by one relative to the plan agreed during the brainstorm.
+
+- **Commit 2 (planned) — README and repository hygiene. Dropped.** `README.md` is authored by the candidate, not generated, so it is out of scope for these commits and lands at the end. The hygiene items planned alongside it were checked against the repository and two of the three were wrong, so nothing was changed:
+  - *`cn` package* — not a random dependency. It is [`shadcn-ui/cn`](https://github.com/shadcn-ui/cn), first-party shadcn tooling and a compiled drop-in replacement for `clsx` + `tailwind-merge`, emitted by the current shadcn CLI. Correct as generated.
+  - *`shadcn` in `dependencies`* — correct as it stands. `src/index.css` imports `shadcn/tailwind.css`, so the package is a build input to the production bundle, not a CLI-only tool. Moving it to `devDependencies` would break `npm ci --omit=dev`.
+  - *Empty `e2e/` directory* — a non-issue. It was never tracked (git does not track empty directories) and `playwright.config.ts` points `testDir` at it, so it stays until commit 7.
+
+  All three are worth a line in the final README so a reviewer does not have to ask, but that is the candidate's text to write.
+
+- **Commit 2 — `feat: match domain model and summary ordering`.** Landed. Three source files and one test file, no UI and no store yet.
+
+  `src/domain/match.ts` — `Match` is a **discriminated union** of `InProgressMatch` and `FinishedMatch` rather than a status field beside a nullable `finishedAt`, so a finished match always has a finish time and an in-progress one cannot. `isInProgress` / `isFinished` are the type guards. `seq` carries the reasoning from D1 in a doc comment, at the point where someone would otherwise be tempted to "simplify" it back to `startedAt`.
+
+  `src/domain/teams.ts` — the ten-team roster, containing every team from the brief's example scenario.
+
+  `src/domain/ordering.ts` — `totalGoals`, `compareInProgress`, `compareFinished`, and the two summary selectors. Both selectors filter by status internally, so there is exactly one place that can get "finished matches must not appear in the summary" wrong.
+
+  **Deviations from this document**, both deliberate:
+  - D1's sketch had flat `home` / `away` fields on `Match`. The implementation nests them as `score: Score`, because D4's undo snapshot is exactly a `Score` and the two should be the same shape rather than two shapes that happen to agree.
+  - `Match.homeTeam` is `string`, not the `Team` union from `teams.ts`. A real deployment loads the roster from a feed, and the domain model should not be coupled to a list that is hard-coded for the exercise. `Team` is exported for the picker to use.
+
+  Selectors use `Array.prototype.toSorted` (available under the project's ES2023 target) so they never mutate their input, and a test asserts that.
+
+  **Test quality check.** The 13 tests were run against a deliberately broken build with the tiebreak reversed (`a.seq - b.seq`); 5 failed, including the example-scenario test. The suite catches the regression it exists to catch rather than passing vacuously.
+
+  **Added mid-commit at the candidate's request:** a regional-indicator flag emoji per team, as a scanning aid for an operator watching several cards. Folded into this commit rather than a later one because it belongs with the roster it describes. See D6 for the accessibility and Windows-rendering constraints it carries. `TEAMS` became a list of `{ name, flag }` objects with the lookup derived from it, so a team cannot be added without a flag, and `Team` is now `(typeof TEAMS)[number]['name']`.
+
+  `npm test` 19 passed · `npx tsc -b` clean · `npm run lint` clean.
+
 
 ---
 
