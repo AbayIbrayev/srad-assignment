@@ -17,10 +17,12 @@ import {
  */
 function deterministicDeps(startAt = 1_000) {
   let clock = startAt
-  let ids = 0
+  let matches = 0
+  let events = 0
   return {
     now: () => (clock += 100),
-    id: () => `match-${++ids}`,
+    matchId: () => `match-${++matches}`,
+    eventId: () => `event-${++events}`,
   }
 }
 
@@ -46,6 +48,11 @@ describe('startMatch', () => {
       startedAt: 1_100,
       status: 'in_progress',
       lastChange: null,
+      // The log opens with the start, stamped from the same clock reading as
+      // the match itself rather than a second one a tick later.
+      events: [
+        { id: 'event-1', at: 1_100, score: { home: 0, away: 0 }, kind: 'MATCH_STARTED' },
+      ],
     })
   })
 
@@ -331,6 +338,130 @@ describe('finishMatch', () => {
   })
 })
 
+describe('the event log', () => {
+  const logOf = (store: ReturnType<typeof newStore>, id = 'match-1') =>
+    store.getState().matches[id].events.map((event) => event.kind)
+
+  it('opens with the match starting', () => {
+    const store = newStore()
+    store.getState().startMatch('Spain', 'Brazil')
+
+    expect(logOf(store)).toEqual(['MATCH_STARTED'])
+  })
+
+  it('records a goal against the side that scored it, with the score that resulted', () => {
+    const store = newStore()
+    store.getState().startMatch('Spain', 'Brazil')
+
+    store.getState().addGoal('match-1', 'away')
+
+    expect(store.getState().matches['match-1'].events.at(-1)).toMatchObject({
+      kind: 'GOAL',
+      side: 'away',
+      score: { home: 0, away: 1 },
+    })
+  })
+
+  it('records a removed goal as its own kind, not as an undo', () => {
+    // The distinction is the point of the log: a goal removed says the score is
+    // genuinely lower, an undo says the previous entry was a mistake.
+    const store = newStore()
+    store.getState().startMatch('Spain', 'Brazil')
+    store.getState().addGoal('match-1', 'home')
+
+    store.getState().removeGoal('match-1', 'home')
+
+    expect(logOf(store)).toEqual(['MATCH_STARTED', 'GOAL', 'GOAL_REMOVED'])
+  })
+
+  it('records nothing for a removal that did not happen', () => {
+    const store = newStore()
+    store.getState().startMatch('Spain', 'Brazil')
+
+    store.getState().removeGoal('match-1', 'home')
+
+    expect(logOf(store)).toEqual(['MATCH_STARTED'])
+  })
+
+  it('appends an undo rather than deleting what it reverted', () => {
+    // Deleting the mistaken entry would leave a log indistinguishable from one
+    // where the mistake never happened, which is the opposite of an audit trail.
+    const store = newStore()
+    store.getState().startMatch('Spain', 'Brazil')
+    store.getState().addGoal('match-1', 'home')
+    const goal = store.getState().matches['match-1'].events.at(-1)
+
+    store.getState().undoLastChange('match-1')
+
+    expect(logOf(store)).toEqual(['MATCH_STARTED', 'GOAL', 'UNDO'])
+    expect(store.getState().matches['match-1'].events.at(-1)).toMatchObject({
+      kind: 'UNDO',
+      revertedEventId: goal?.id,
+      score: { home: 0, away: 0 },
+    })
+  })
+
+  it('names the entry an undo reverted, so the log can be read back', () => {
+    const store = newStore()
+    store.getState().startMatch('Spain', 'Brazil')
+    store.getState().addGoal('match-1', 'home')
+    store.getState().addGoal('match-1', 'away')
+    store.getState().undoLastChange('match-1')
+
+    const events = store.getState().matches['match-1'].events
+    const undo = events.at(-1)
+    const reverted = events.find((event) => event.id === (undo as { revertedEventId: string }).revertedEventId)
+
+    // The second goal, not the first.
+    expect(reverted).toMatchObject({ kind: 'GOAL', side: 'away' })
+  })
+
+  it('records no second undo, because a single-step undo disarms itself', () => {
+    const store = newStore()
+    store.getState().startMatch('Spain', 'Brazil')
+    store.getState().addGoal('match-1', 'home')
+    store.getState().undoLastChange('match-1')
+    store.getState().undoLastChange('match-1')
+
+    expect(logOf(store)).toEqual(['MATCH_STARTED', 'GOAL', 'UNDO'])
+  })
+
+  it('closes with the match finishing, and keeps the whole record', () => {
+    const store = newStore()
+    store.getState().startMatch('Spain', 'Brazil')
+    store.getState().addGoal('match-1', 'home')
+    store.getState().finishMatch('match-1')
+
+    expect(logOf(store)).toEqual(['MATCH_STARTED', 'GOAL', 'MATCH_FINISHED'])
+    expect(store.getState().matches['match-1'].events.at(-1)).toMatchObject({
+      kind: 'MATCH_FINISHED',
+      score: { home: 1, away: 0 },
+    })
+  })
+
+  it('keeps entries in the order they happened', () => {
+    const store = newStore()
+    store.getState().startMatch('Spain', 'Brazil')
+    store.getState().addGoal('match-1', 'home')
+    store.getState().addGoal('match-1', 'home')
+
+    const times = store.getState().matches['match-1'].events.map((event) => event.at)
+
+    expect(times).toEqual([...times].sort((a, b) => a - b))
+  })
+
+  it('survives a reload intact', () => {
+    const first = newStore()
+    first.getState().startMatch('Spain', 'Brazil')
+    first.getState().addGoal('match-1', 'home')
+    first.getState().undoLastChange('match-1')
+
+    const second = newStore()
+
+    expect(logOf(second)).toEqual(['MATCH_STARTED', 'GOAL', 'UNDO'])
+  })
+})
+
 describe('persistence', () => {
   it('restores matches and the registration counter into a fresh store', () => {
     const first = newStore()
@@ -414,6 +545,45 @@ describe('persistence', () => {
 
     store.getState().undoLastChange('match-1')
     expect(store.getState().matches['match-1'].score).toEqual({ home: 1, away: 0 })
+  })
+
+  it('migrates state written before the event log existed', () => {
+    // A match carried forward gets the one entry that can be reconstructed
+    // truthfully -- when it started. Goals scored before the upgrade are absent
+    // because they were never recorded, which is the honest result rather than
+    // a log invented to look complete.
+    localStorage.setItem(
+      SCOREBOARD_STORAGE_KEY,
+      JSON.stringify({
+        state: {
+          matches: {
+            'match-1': {
+              id: 'match-1',
+              seq: 1,
+              homeTeam: 'Spain',
+              awayTeam: 'Brazil',
+              score: { home: 3, away: 1 },
+              startedAt: 1_000,
+              status: 'in_progress',
+              lastChange: { home: 2, away: 1 },
+            },
+          },
+          nextSeq: 2,
+        },
+        version: 2,
+      }),
+    )
+
+    const store = newStore()
+    const restored = store.getState().matches['match-1']
+
+    expect(restored.score).toEqual({ home: 3, away: 1 })
+    expect(restored.events).toEqual([
+      { id: 'match-1-migrated-start', at: 1_000, score: { home: 0, away: 0 }, kind: 'MATCH_STARTED' },
+    ])
+    // The version 2 snapshot names no logged entry, so there is nothing an
+    // UNDO entry could point at and undo starts disarmed.
+    expect(isInProgress(restored) && restored.lastChange).toBeNull()
   })
 
   it('still starts, and is still usable, after discarding corrupt state', () => {

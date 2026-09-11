@@ -1,3 +1,5 @@
+import type { MatchEvent, MatchEventId } from './events'
+
 export type MatchId = string
 
 export type Side = 'home' | 'away'
@@ -26,6 +28,15 @@ interface MatchBase {
   score: Score
   /** Wall clock, for display only. `seq` orders the summary. */
   startedAt: number
+  /**
+   * Everything that has happened to this match, oldest first.
+   *
+   * Kept on the match rather than in a separate log keyed by match id: the log
+   * is only ever read alongside its match, and a finished match should carry
+   * its own record rather than pointing at one that could be pruned
+   * independently.
+   */
+  events: MatchEvent[]
 }
 
 export interface InProgressMatch extends MatchBase {
@@ -36,11 +47,13 @@ export interface InProgressMatch extends MatchBase {
    *
    * Deliberately one snapshot and not a stack. The brief asks for "undo last
    * score change", singular, and a single step is what an operator correcting
-   * a mis-click actually needs. Keeping it to one value also means the event
-   * log that follows can be added on top rather than replacing a history
-   * mechanism that already exists in a second, slightly different shape.
+   * a mis-click actually needs.
+   *
+   * `eventId` names the entry in `events` that undoing would revert, so the
+   * `UNDO` entry can point at it rather than the log having to infer which
+   * entry was meant.
    */
-  lastChange: Score | null
+  lastChange: { score: Score; eventId: MatchEventId } | null
 }
 
 export interface FinishedMatch extends MatchBase {

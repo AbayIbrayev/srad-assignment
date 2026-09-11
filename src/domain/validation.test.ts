@@ -16,6 +16,7 @@ function inProgress(homeTeam: string, awayTeam: string): InProgressMatch {
     startedAt: 0,
     status: 'in_progress',
     lastChange: null,
+    events: [],
   }
 }
 

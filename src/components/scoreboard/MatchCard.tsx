@@ -16,6 +16,7 @@ import { totalGoals } from '@/domain/ordering'
 import { useScoreboardStore } from '@/store/scoreboard'
 import { useMatch } from '@/store/selectors'
 
+import { EventLog } from './EventLog'
 import { FinishMatchDialog } from './FinishMatchDialog'
 import { fixture, goalCount, scoreline, teamOf } from './match-text'
 import { TeamName, TimeAt } from './Scoreline'
@@ -122,6 +123,8 @@ export function MatchCard({
             </div>
           )
         })}
+
+        <EventLog match={match} />
       </CardContent>
 
       <CardFooter className="gap-2">

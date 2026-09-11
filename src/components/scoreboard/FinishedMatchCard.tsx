@@ -4,6 +4,7 @@ import { isFinished } from '@/domain/match'
 import { totalGoals } from '@/domain/ordering'
 import { useMatch } from '@/store/selectors'
 
+import { EventLog } from './EventLog'
 import { goalCount, teamOf } from './match-text'
 import { TeamName, TimeAt } from './Scoreline'
 
@@ -32,6 +33,9 @@ export function FinishedMatchCard({ id }: { id: MatchId }) {
             <span className="w-6 text-right font-semibold tabular-nums">{match.score[side]}</span>
           </div>
         ))}
+
+        {/* The record outlives the match: a finished match keeps its log. */}
+        <EventLog match={match} />
       </CardContent>
     </Card>
   )

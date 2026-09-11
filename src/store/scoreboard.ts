@@ -1,7 +1,8 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 
-import type { InProgressMatch, Match, MatchId, Side } from '@/domain/match'
+import type { DraftMatchEvent, MatchEvent, MatchEventId } from '@/domain/events'
+import type { InProgressMatch, Match, MatchId, Score, Side } from '@/domain/match'
 import { isInProgress } from '@/domain/match'
 import type { StartMatchError } from '@/domain/validation'
 import { validateStartMatch } from '@/domain/validation'
@@ -13,11 +14,12 @@ export const SCOREBOARD_STORAGE_KEY = 'srad-scoreboard'
 /**
  * Bumped when the persisted shape changes in a way older state cannot satisfy.
  *
- * Version 2 added `lastChange` to in-progress matches for undo. Migrating
- * rather than discarding matters more than it looks: an operator who reloads
- * into a new build mid-matchday should not lose the board they are watching.
+ * Version 2 added `lastChange` to in-progress matches for undo; version 3
+ * added the event log. Migrating rather than discarding matters more than it
+ * looks: an operator who reloads into a new build mid-matchday should not lose
+ * the board they are watching.
  */
-export const SCOREBOARD_STORAGE_VERSION = 2
+export const SCOREBOARD_STORAGE_VERSION = 3
 
 /**
  * The clock and the id generator are injected rather than reached for, so the
@@ -26,7 +28,13 @@ export const SCOREBOARD_STORAGE_VERSION = 2
  */
 export interface ScoreboardDeps {
   now: () => number
-  id: () => MatchId
+  /**
+   * Two generators rather than one, because the store mints two kinds of
+   * identifier. Production wires both to the same source; separating them
+   * keeps a test's match ids from shifting every time an event is recorded.
+   */
+  matchId: () => MatchId
+  eventId: () => MatchEventId
 }
 
 export interface PersistedScoreboard {
@@ -83,11 +91,14 @@ const isMatch = (value: unknown): value is Match => {
     isScore(match.score)
 
   if (!shapeIsSound) return false
+  // `events` may be absent: version 2 predates the log, and this guard runs
+  // before the version gate. See the note on `lastChange` below.
+  if (match.events !== undefined && !Array.isArray(match.events)) return false
   if (match.status === 'in_progress') {
-    // `lastChange` may be absent: version 1 predates undo, and this guard runs
-    // *before* zustand's version gate. Rejecting older-but-recoverable state
-    // here would make the migration below unreachable.
-    return match.lastChange == null || isScore(match.lastChange)
+    // `lastChange` may be absent, or be a bare score written by version 2:
+    // this guard runs *before* zustand's version gate, so rejecting
+    // older-but-recoverable state here would make the migrations unreachable.
+    return true
   }
   return match.status === 'finished' && Number.isFinite(match.finishedAt)
 }
@@ -110,6 +121,9 @@ export function createScoreboardStore(deps: ScoreboardDeps) {
   return create<ScoreboardState>()(
     persist(
       (set, get) => {
+        const record = (event: DraftMatchEvent): MatchEvent =>
+          ({ id: deps.eventId(), at: deps.now(), ...event }) as MatchEvent
+
         /**
          * Every score change funnels through here, so "a finished match is
          * immutable" is enforced in one place rather than repeated at each
@@ -128,6 +142,22 @@ export function createScoreboardStore(deps: ScoreboardDeps) {
           set((state) => ({ matches: { ...state.matches, [id]: updated } }))
         }
 
+        /** One place where a score change becomes both a new score and a log entry. */
+        const scored = (
+          match: InProgressMatch,
+          score: Score,
+          kind: 'GOAL' | 'GOAL_REMOVED',
+          side: Side,
+        ): InProgressMatch => {
+          const event = record({ kind, side, score })
+          return {
+            ...match,
+            score,
+            lastChange: { score: match.score, eventId: event.id },
+            events: [...match.events, event],
+          }
+        }
+
         return {
           matches: {},
           nextSeq: 1,
@@ -137,17 +167,26 @@ export function createScoreboardStore(deps: ScoreboardDeps) {
             const error = validateStartMatch(Object.values(state.matches), homeTeam, awayTeam)
             if (error) return { ok: false, error }
 
-            const id = deps.id()
+            const id = deps.matchId()
+            const startedAt = deps.now()
             const match: InProgressMatch = {
               id,
               seq: state.nextSeq,
               homeTeam,
               awayTeam,
               score: { home: 0, away: 0 },
-              startedAt: deps.now(),
+              startedAt,
               status: 'in_progress',
               lastChange: null,
+              events: [],
             }
+
+            match.events.push({
+              id: deps.eventId(),
+              at: startedAt,
+              score: match.score,
+              kind: 'MATCH_STARTED',
+            })
 
             set({
               matches: { ...state.matches, [id]: match },
@@ -158,38 +197,51 @@ export function createScoreboardStore(deps: ScoreboardDeps) {
           },
 
           addGoal: (id, side) =>
-            updateInProgress(id, (match) => ({
-              ...match,
-              score: { ...match.score, [side]: match.score[side] + 1 },
-              lastChange: match.score,
-            })),
+            updateInProgress(id, (match) =>
+              scored(match, { ...match.score, [side]: match.score[side] + 1 }, 'GOAL', side),
+            ),
 
           removeGoal: (id, side) =>
             updateInProgress(id, (match) =>
               match.score[side] === 0
                 ? match
-                : {
-                    ...match,
-                    score: { ...match.score, [side]: match.score[side] - 1 },
-                    lastChange: match.score,
-                  },
+                : scored(
+                    match,
+                    { ...match.score, [side]: match.score[side] - 1 },
+                    'GOAL_REMOVED',
+                    side,
+                  ),
             ),
 
           undoLastChange: (id) =>
-            updateInProgress(id, (match) =>
+            updateInProgress(id, (match) => {
               // Falsy rather than `=== null`: hand-edited storage can leave the
               // field absent, and restoring `undefined` as a score would be
               // worse than doing nothing.
-              match.lastChange
-                ? { ...match, score: match.lastChange, lastChange: null }
-                : match,
-            ),
+              if (!match.lastChange) return match
+
+              const { score, eventId } = match.lastChange
+              return {
+                ...match,
+                score,
+                lastChange: null,
+                // Appended, never subtracted. Deleting the mistaken entry would
+                // leave a log that cannot be told apart from one where the
+                // mistake never happened, which is the opposite of an audit
+                // trail.
+                events: [
+                  ...match.events,
+                  record({ kind: 'UNDO', revertedEventId: eventId, score }),
+                ],
+              }
+            }),
 
           finishMatch: (id) =>
             updateInProgress(id, ({ lastChange: _undoable, ...match }) => ({
               ...match,
               status: 'finished',
               finishedAt: deps.now(),
+              events: [...match.events, record({ kind: 'MATCH_FINISHED', score: match.score })],
             })),
         }
       },
@@ -204,21 +256,37 @@ export function createScoreboardStore(deps: ScoreboardDeps) {
         migrate: (persisted, version) => {
           const state = persisted as PersistedScoreboard
 
-          // v1 predates undo. Give every in-progress match an empty history
-          // rather than dropping the operator's board on upgrade.
-          if (version < 2) {
-            return {
-              ...state,
-              matches: Object.fromEntries(
-                Object.entries(state.matches).map(([id, match]) => [
-                  id,
-                  match.status === 'in_progress' ? { ...match, lastChange: null } : match,
-                ]),
-              ),
-            }
-          }
+          if (version >= SCOREBOARD_STORAGE_VERSION) return state
 
-          return state
+          // v1 predates undo and v2 predates the event log. Rather than
+          // dropping the operator's board on upgrade, bring each match forward:
+          // nothing to undo (there is no logged entry an UNDO could name), and
+          // a log seeded with the one event that can be reconstructed
+          // truthfully -- when the match started. Goals scored before the
+          // upgrade are absent because they were never recorded, which is the
+          // honest result.
+          return {
+            ...state,
+            matches: Object.fromEntries(
+              Object.entries(state.matches).map(([id, match]) => [
+                id,
+                {
+                  ...match,
+                  ...(match.status === 'in_progress' ? { lastChange: null } : {}),
+                  events: Array.isArray(match.events)
+                    ? match.events
+                    : [
+                        {
+                          id: `${id}-migrated-start`,
+                          at: match.startedAt,
+                          score: { home: 0, away: 0 },
+                          kind: 'MATCH_STARTED' as const,
+                        },
+                      ],
+                },
+              ]),
+            ),
+          }
         },
       },
     ),
@@ -236,5 +304,6 @@ const randomId = (): MatchId =>
 
 export const useScoreboardStore = createScoreboardStore({
   now: () => Date.now(),
-  id: randomId,
+  matchId: randomId,
+  eventId: randomId,
 })

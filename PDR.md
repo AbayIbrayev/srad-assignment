@@ -128,7 +128,7 @@ The container selects the ordered list of match **ids** with a shallow comparato
 
 ### D8. Persistence
 
-Storage key `srad-scoreboard`. `version: 2` as of the undo commit, which added `lastChange` to in-progress matches; the event log will take it to `3`. Each bump ships a migration rather than letting older state be discarded — an operator who reloads into a new build mid-matchday should not lose the board they are watching. Corrupt or unparseable stored state resets to empty rather than white-screening the application. Documented in the README under the brief's "Data:" line.
+Storage key `srad-scoreboard`. `version: 3`. Version 2 added `lastChange` to in-progress matches for undo; version 3 added the event log. Each bump ships a migration rather than letting older state be discarded — an operator who reloads into a new build mid-matchday should not lose the board they are watching. Corrupt or unparseable stored state resets to empty rather than white-screening the application. Documented in the README under the brief's "Data:" line.
 
 There is **no retention policy** on finished matches or event history. This is recorded in the README as an accepted trade-off — a single matchday does not need one. A "clear finished" button is deliberately not added, because it would invite feature-count questions against "exactly one additional operation".
 
@@ -178,7 +178,7 @@ Each commit is self-contained and green.
 | 3 | `feat: scoreboard store with localStorage persistence` | zustand slice, start / score / finish, validation, `persist` v1 with guarded rehydration, store tests | done |
 | 4 | `feat: start, update score and finish UI` | Dialogs, `<ol>` grid, cards, finished group, accessibility wiring, RTL tests | done |
 | 5 | `feat: undo last score change` | The section 5 additional operation | done |
-| 6 | `feat: per-match event log with audit trail` | **The distinct feature commit.** Event union, persist v2 + migration, collapsible scrollable log, `GOAL_REMOVED` vs `UNDO` rendering, tests | pending |
+| 6 | `feat: per-match event log with audit trail` | **The distinct feature commit.** Event union, persist v3 + migration, collapsible scrollable log, `GOAL_REMOVED` vs `UNDO` rendering, tests | done |
 | 7 | `test: playwright end-to-end coverage for core flows` | Three flows | pending |
 | 8 | `docs: finalise README` | Assumptions, trade-offs, requirement map, accessibility compromises, run instructions, feature documentation — **authored by the candidate, not generated** | pending |
 
@@ -275,6 +275,26 @@ Appended per commit: what landed, what deviated from this document, and any deci
   **Verified in a real browser.** Undo is disabled on a fresh match, enabled by a goal, restores the previous score, disables itself again, announces "Last change undone. Spain 1 - 0 Brazil.", and disappears entirely once the match is finished. Persisted state reports `version: 2`. Chromium's own accessibility tree — not the test polyfill — resolves exactly one button for the full name `Undo last score change: Spain versus Brazil`.
 
   `npm test` 119 passed · `npx tsc -b` clean · `npm run lint` clean · `npm run build` green.
+
+- **Commit 6 — `feat: per-match event log with audit trail`.** The distinct feature commit required by the brief, in one commit: event model, store recording across every action, a v2 to v3 migration, the log UI, and its tests.
+
+  **Why this feature.** The score alone tells an operator where a match stands but nothing about how it got there, and this app deliberately offers two ways to take a goal off the board that are arithmetically identical. `GOAL_REMOVED` asserts the goal did not count — disallowed, overturned, awarded to the wrong side. `UNDO` asserts the previous entry was a data-entry error, and names the entry it reverted. Without a record there is no way to tell those apart afterwards, which is exactly what someone reconciling a disputed scoreline needs.
+
+  **Undo appends, never subtracts.** Deleting the mistaken entry would leave a log indistinguishable from one where the mistake never happened — the opposite of an audit trail. A mutant that deleted the reverted entry instead of appending an `UNDO` failed six tests.
+
+  **Decisions taken during implementation:**
+  - `ScoreboardDeps` now carries **two** id generators, `matchId` and `eventId`. Production wires both to the same source; separating them stops a test's match ids shifting every time an event is recorded, which is what happened the moment the log started minting ids from the shared generator.
+  - `lastChange` grew from a bare `Score` to `{ score, eventId }`, so an `UNDO` entry can name what it reverted rather than the log inferring it from position. The v2 to v3 migration sets it to `null`: a version 2 snapshot names no logged entry, so there is nothing an `UNDO` could point at.
+  - Migrated matches get a log seeded with **one** `MATCH_STARTED` entry, stamped from the match's own `startedAt`. Goals scored before the upgrade are absent because they were never recorded — the honest result, rather than a plausible history invented to look complete.
+  - The log is collapsed by default with the count on the summary line. An open log on every card would cost the height that made the summary worth being a grid.
+  - The list is the scroll container and carries `tabIndex={0}` with an accessible name: a scrollable region that cannot be focused is content only a mouse can read.
+  - Entries are not colour-coded. The wording carries the distinction and the marker glyph is `aria-hidden`, because colour or glyph alone must never be the thing that tells two entries apart.
+
+  **Test quality check.** Five mutants, all caught: undo deleting what it reverted (6 failures), a removed goal logged as an ordinary goal (2), the log rendered oldest-first (5), the scroll region not focusable (1), and the migration seeding an empty log (1).
+
+  **Verified in a real browser.** Collapsed by default; opened, it reads newest-first — `Undone: Goal — Brazil` / `Goal — Brazil` / `Goal removed — Spain` / `Goal — Spain` / `Match started`, each with its time and the score that resulted. The region takes keyboard focus, a finished card keeps its full log, persisted state reports `version: 3`, and there were no page errors.
+
+  `npm test` 141 passed · `npx tsc -b` clean · `npm run lint` clean · `npm run build` green.
 
 
 ---

@@ -66,7 +66,9 @@ describe('the scoreboard', () => {
     givenExampleScenario()
     renderApp()
 
-    expect(within(summaryList()).getAllByRole('listitem')).toHaveLength(5)
+    // Direct children only: each card now nests its own event log, which is a
+    // list in its own right and should not be counted as part of the summary.
+    expect(summaryList().querySelectorAll(':scope > li')).toHaveLength(5)
   })
 
   it('re-ranks when a score changes the order', async () => {

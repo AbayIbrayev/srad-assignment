@@ -26,6 +26,7 @@ function inProgress(
     startedAt: 0,
     status: 'in_progress',
     lastChange: null,
+    events: [],
   }
 }
 

@@ -203,3 +203,21 @@ That second one is worth dwelling on. It would have passed any review that read 
 **Test quality, checked as usual.** Five mutants, all caught: goals never arming undo, undo failing to disarm and quietly becoming multi-step, a finished match keeping its undo history, the migration removed, and the button never disabled.
 
 **One deviation from the design document,** recorded there: `PDR.md` had reserved storage version 2 for the event log. Undo needed a bump first, so undo is version 2 and the event log will be version 3.
+
+### Round 13 — the distinct feature commit: per-match event log
+
+The second, larger slice of work the brief asks for, in one commit: the event model, recording across every store action, a version 3 migration, the log UI, and its tests.
+
+**Why this feature and not one of the brief's other suggestions.** The app deliberately offers two ways to take a goal off the board that are arithmetically identical, and the design has been leaning on that distinction since round 3 to justify undo existing alongside the minus button. A log is what makes the distinction real rather than asserted: `GOAL_REMOVED` says the goal did not count, `UNDO` says the previous entry was a mistake and names the entry it reverted. Without the record, the claim made in round 3 would have been a story told in a README about behaviour the app could not demonstrate.
+
+**The design rule that mattered most: undo appends, never subtracts.** Deleting the entry an undo reverted would leave a log indistinguishable from one where the mistake never happened, which is the opposite of an audit trail. A mutant that deleted instead of appending failed six tests.
+
+**Things decided while building rather than while designing:**
+
+- The store started minting event ids from the same generator as match ids, which quietly shifted every match id in the tests — the second match became `match-3`. Rather than working around that in the fixtures, `ScoreboardDeps` now declares two generators. Production wires both to the same source; the split exists because the store genuinely mints two kinds of identifier, and saying so keeps the tests readable.
+- `lastChange` grew from a bare score to `{ score, eventId }` so an undo entry can name what it reverted instead of the log inferring it from position.
+- Matches carried forward from version 2 get a log seeded with a single "match started" entry taken from their own start time. Goals scored before the upgrade are simply absent, because they were never recorded. Inventing a plausible history so the log looked complete was the obvious alternative and the wrong one: a fabricated audit trail is worse than an admittedly partial one.
+
+**Test quality, checked as usual.** Five mutants, all caught: undo deleting what it reverted, a removed goal logged as an ordinary goal, the log rendered oldest-first, the scroll region not focusable, and the migration seeding an empty log.
+
+**Verified in a real browser.** Collapsed by default, and opened it reads newest-first with every entry timestamped and carrying the score that resulted. The two entries that matter render as visibly different sentences. The region takes keyboard focus, a finished match keeps its whole log, and persisted state reports version 3.
